@@ -405,6 +405,12 @@ export async function analyse(symbol) {
     intraday.available && intraday.score != null ? Math.round(score * 0.65 + intraday.score * 0.35) : score;
   const liveVerdict = verdictFor(liveScore);
 
+  // Price the trade levels are built from: the extended-hours price when the stock is trading
+  // pre-market / after hours, otherwise the regular price. (The daily technicals above stay on
+  // the official close, since daily bars are close-to-close.)
+  const session = intraday.session || (daily.quote.marketState === 'REGULAR' ? 'regular' : 'closed');
+  const tradePrice = intraday.extended?.price ?? daily.quote.extPrice ?? price;
+
   const daysToEarnings = analyst?.nextEarnings ? Math.ceil((analyst.nextEarnings * 1000 - Date.now()) / 86400_000) : null;
   const earningsSoon = daysToEarnings != null && daysToEarnings >= 0 && daysToEarnings <= 7;
 
@@ -420,7 +426,8 @@ export async function analyse(symbol) {
     analystScore: aggregate(an),
     signals,
     levels: tech.levels,
-    plan: tradePlan(liveScore, price, atr(liveBars, 14), tech.levels, analyst),
+    plan: tradePlan(liveScore, tradePrice, atr(liveBars, 14), tech.levels, analyst),
+    session,
     live: {
       score: liveScore,
       verdict: liveVerdict.label,

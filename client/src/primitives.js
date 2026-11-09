@@ -2,6 +2,52 @@
 // They draw straight onto the chart canvas and stay in sync with zoom/scroll for free.
 
 /* --------------------------------------------------------------------------------------
+ * Extended-hours shading: a light background band behind pre-market (before 9:30) and
+ * after-hours (after 16:00) bars, so the regular session stands out.
+ * `ranges` = [{ from, to }] in chart (shifted) time; drawn from bar centre to bar centre.
+ * ------------------------------------------------------------------------------------ */
+export class SessionShade {
+  constructor() {
+    this._ranges = [];
+    this._color = 'rgba(0,0,0,0.035)';
+    this._chart = null;
+    const renderer = { draw: (target) => this._draw(target) };
+    this._views = [{ zOrder: () => 'bottom', renderer: () => renderer }];
+  }
+  attached({ chart, requestUpdate }) {
+    this._chart = chart;
+    this._requestUpdate = requestUpdate;
+  }
+  detached() {
+    this._chart = null;
+  }
+  paneViews() {
+    return this._views;
+  }
+  setRanges(ranges, color) {
+    this._ranges = ranges || [];
+    if (color) this._color = color;
+    this._requestUpdate?.();
+  }
+  _draw(target) {
+    const ts = this._chart?.timeScale();
+    if (!ts || !this._ranges.length) return;
+    target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
+      ctx.fillStyle = this._color;
+      const half = Math.max(1, ts.options().barSpacing / 2);
+      for (const r of this._ranges) {
+        const x1 = ts.timeToCoordinate(r.from);
+        const x2 = ts.timeToCoordinate(r.to);
+        if (x1 == null && x2 == null) continue;
+        const a = (x1 ?? 0) - half;
+        const b = (x2 ?? mediaSize.width) + half;
+        ctx.fillRect(Math.max(0, a), 0, Math.min(mediaSize.width, b) - Math.max(0, a), mediaSize.height);
+      }
+    });
+  }
+}
+
+/* --------------------------------------------------------------------------------------
  * Trade zones: shaded reward zone (entry -> target) and risk zone (entry -> stop),
  * spanning the right part of the chart so they read as "from now on" levels.
  * The entry/target/stop lines and their axis labels are separate price lines.

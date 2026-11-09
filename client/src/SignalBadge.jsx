@@ -1,5 +1,7 @@
 import { fmtPrice } from './format.js';
 
+const SESSION_LABEL = { regular: 'Live', pre: 'Pre-market', post: 'After-hours', closed: 'Closing' };
+
 const ARROW = { 'strong-buy': '▲▲', buy: '▲', hold: '■', sell: '▼', 'strong-sell': '▼▼' };
 
 /**
@@ -43,7 +45,7 @@ export default function SignalBadge({ analysis, livePrice, onDetails }) {
       )}
 
       <div className="sig-meta">
-        {live.intraday.available ? 'Live' : 'Daily'} signal at {fmtPrice(plan?.reference ?? data.price)}
+        {SESSION_LABEL[data.session] || (live.intraday.available ? 'Live' : 'Daily')} signal at {fmtPrice(plan?.reference ?? data.price)}
         {data.earnings?.soon && <span className="sig-warn"> · earnings in {Math.max(0, data.earnings.daysAway)}d</span>}
         {stale && <span className="sig-stale"> · price moved {drift > 0 ? '+' : ''}{drift.toFixed(1)}%, refreshing</span>}
       </div>

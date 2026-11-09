@@ -24,6 +24,7 @@
   /* Trade zones + volume profile (drawn on the chart canvas) */
   --zone-reward: rgba(12, 163, 12, 0.10);
   --zone-risk: rgba(208, 59, 59, 0.10);
+  --ext-shade: rgba(11, 11, 11, 0.045);
   /* Neutral greys so the profile never reads as a series (VWAP is blue) */
   --vp-bar: rgba(82, 81, 78, 0.12);
   --vp-va: rgba(82, 81, 78, 0.26);
@@ -52,6 +53,7 @@
   --ov-ema150: #d55181;
   --zone-reward: rgba(12, 163, 12, 0.14);
   --zone-risk: rgba(230, 103, 103, 0.14);
+  --ext-shade: rgba(255, 255, 255, 0.05);
   --vp-bar: rgba(195, 194, 183, 0.12);
   --vp-va: rgba(195, 194, 183, 0.26);
   --vp-poc: rgba(240, 239, 236, 0.62);
@@ -120,7 +122,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .delta-up { color: var(--up-text); }
 .delta-down { color: var(--down-text); }
 .delta-flat { color: var(--text-secondary); }
-.ext { font-size: 13px; color: var(--text-secondary); }
+.ext { font-size: 13px; color: var(--text-secondary); display: inline-flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.ext strong { font-size: 16px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.ext-tag {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 6px;
+  border-radius: 4px; background: var(--wash); color: var(--text-secondary); border: 1px solid var(--axis);
+}
+.ext-note { font-size: 12px; color: var(--text-muted); }
 
 .status {
   margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
@@ -218,6 +226,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .layer-swatch.obv { height: 2px; background: var(--text-secondary); border-radius: 1px; }
 .layer-swatch.spike { width: 6px; height: 12px; background: var(--up); border-radius: 1px; }
+.layer-swatch.ext { background: var(--ext-shade); border: 1px solid var(--axis); width: 14px; height: 12px; }
+.ext-legend { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-muted); margin: 0 0 6px; }
+.ext-legend .layer-swatch { margin-top: 2px; }
 .spike-read { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); padding: 4px 4px; }
 .spike-read.is-spike { color: var(--text-primary); font-weight: 600; }
 

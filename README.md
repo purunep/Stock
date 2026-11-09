@@ -101,6 +101,18 @@ Then open http://localhost:8080.
 | Analysts | Consensus | 2.5 | Yahoo's mean rating (1 strong buy … 5 strong sell) |
 | Analysts | Price target | 2 | Upside or downside to the mean 12-month target |
 
+### Pre-market and after-hours
+
+US stocks trade in three sessions: **pre-market 4:00–9:30 AM**, **regular 9:30 AM–4:00 PM** and **after hours 4:00–8:00 PM** (Eastern Time). The app runs in all three:
+
+- **Live price:** the 1D chart keeps streaming every 5 seconds outside regular hours, and the header shows the extended-hours price with its change. After hours it's compared with the 4:00 PM close; pre-market with the previous close.
+- **Signal at the extended-hours price:** outside regular hours the intraday signals (VWAP, opening range, short-term trend) and the entry/target/stop levels use the current pre-market or after-hours price, not the 4:00 PM close. The badge says "After-hours signal at …" or "Pre-market signal at …". An extra **Pre-market / After-hours move** signal weighs the size of the move by its volume: a big move on heavy volume counts; a move on thin volume barely counts, because it often reverses at the open.
+- **Volume:** Yahoo's free feed has extended-hours *prices* but reports their volume as 0, so on 1D those volume bars are empty, and VWAP, the volume profile, spikes and OBV cover the regular session only. The session's total extended-hours volume comes from Nasdaq.com instead (US stocks and ETFs only) and is shown under the chart and in the signal.
+- **Shading:** on 1D, pre-market and after-hours bars have a light grey background, so the regular session stands out.
+- The daily technical indicators and back-test always use official closing prices, because daily bars run from close to close.
+
+Crypto (for example `BTC-USD`) trades around the clock, so it is always treated as the regular session.
+
 ### Chart overlays
 
 `client/src/overlays.js` computes the lines on the bars of whichever range is shown:

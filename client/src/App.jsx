@@ -94,10 +94,19 @@ export default function App() {
                 <span aria-hidden="true">{dir === 'up' ? '▲' : dir === 'down' ? '▼' : '■'}</span>
                 {fmtChange(quote.change)} ({fmtPct(quote.changePct)})
               </span>
-              {quote.extPrice != null && (
-                <span className="ext">
-                  {STATE_LABEL[quote.marketState]}: <strong>{fmtPrice(quote.extPrice)}</strong>
+              {quote.extPrice != null ? (
+                <span className="ext" title={`Extended-hours trading: ${quote.marketState === 'POST' ? '4:00–8:00 PM' : '4:00–9:30 AM'} ET`}>
+                  <span className="ext-tag">{STATE_LABEL[quote.marketState]}</span>
+                  <strong>{fmtPrice(quote.extPrice)}</strong>
+                  {quote.extChangePct != null && (
+                    <span className={quote.extChangePct >= 0 ? 'stance-bullish' : 'stance-bearish'}>
+                      {quote.extChangePct >= 0 ? '▲' : '▼'} {fmtPct(quote.extChangePct)}
+                    </span>
+                  )}
+                  <span className="ext-note">{quote.marketState === 'POST' ? 'vs 4:00 PM close' : 'vs prev close'}</span>
                 </span>
+              ) : (
+                quote.marketState === 'CLOSED' && <span className="ext ext-note">At close</span>
               )}
             </div>
           )}
@@ -153,6 +162,7 @@ export default function App() {
           dark={dark}
           dimmed={loading}
           plan={analysis.data?.symbol === symbol ? analysis.data.plan : null}
+          extended={analysis.data?.symbol === symbol ? analysis.data.live?.intraday?.extended : null}
         />
 
         {quote && !loading && (

@@ -10,7 +10,7 @@ import {
 } from 'lightweight-charts';
 import { fmtPrice, fmtVolume, fmtTime } from './format.js';
 import { emaLine, vwapLine, obvLine, volumeSpikes, OVERLAYS } from './overlays.js';
-import { TradeZones, VolumeProfile, buildProfile } from './primitives.js';
+import { TradeZones, VolumeProfile, SessionShade, buildProfile } from './primitives.js';
 
 // Optional chart layers (toggled from the legend, remembered across visits).
 const LAYER_PREF_KEY = 'layers.v1';
@@ -81,7 +81,7 @@ function seriesColors() {
 // axis reads in the exchange's local time (e.g. 09:30 for a NYSE open).
 const toChartBars = (bars, offset) => bars.map((b) => ({ ...b, time: b.time + offset }));
 
-export default function StockChart({ bars, warmup = [], resetSeq, quote, chartType, range, dark, dimmed, plan }) {
+export default function StockChart({ bars, warmup = [], resetSeq, quote, chartType, range, dark, dimmed, plan, extended }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const priceRef = useRef(null);
@@ -94,6 +94,7 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
   const [layers, setLayers] = useState(loadLayers);
   const zonesRef = useRef(null);
   const profileRef = useRef(null);
+  const shadeRef = useRef(null);
   const planLinesRef = useRef([]);
   const obvRef = useRef(null);
   const toggleLayer = (key) =>
@@ -217,16 +218,20 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
     const series = priceRef.current;
 
     // Custom drawings ride on the price series.
+    const shade = new SessionShade();
     const zones = new TradeZones();
     const prof = new VolumeProfile();
+    series.attachPrimitive(shade);
     series.attachPrimitive(prof);
     series.attachPrimitive(zones);
+    shadeRef.current = shade;
     zonesRef.current = zones;
     profileRef.current = prof;
 
     return () => {
       // The chart may already be removed (unmount / StrictMode remount) — that's fine.
       try {
+        series.detachPrimitive(shade);
         series.detachPrimitive(zones);
         series.detachPrimitive(prof);
         chart.removeSeries(series);
@@ -236,8 +241,25 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
       planLinesRef.current = [];
       zonesRef.current = null;
       profileRef.current = null;
+      shadeRef.current = null;
     };
   }, [chartType, dark]);
+
+  // Extended-hours shading (1D only: that's the only range that includes pre/post bars).
+  const extRanges = useMemo(() => {
+    const s = quote?.session;
+    if (range !== '1d' || !s || !bars.length) return [];
+    const pre = bars.filter((b) => b.time < s.start);
+    const post = bars.filter((b) => b.time >= s.end);
+    const out = [];
+    if (pre.length) out.push({ from: pre[0].time + offset, to: pre.at(-1).time + offset, kind: 'pre', n: pre.length });
+    if (post.length) out.push({ from: post[0].time + offset, to: post.at(-1).time + offset, kind: 'post', n: post.length });
+    return out;
+  }, [bars, range, offset, quote?.session?.start]);
+
+  useEffect(() => {
+    shadeRef.current?.setRanges(extRanges, cssVar('--ext-shade'));
+  }, [extRanges, chartType, dark]);
 
   // Push data: full setData on a new snapshot / series swap, incremental update() on ticks.
   useEffect(() => {
@@ -460,12 +482,17 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
   const isSpike = readout ? spikes.has(readout.time) : false;
   const spikeCount = spikes.size;
   const obvTrend = (() => {
-    const o = lines.obv;
-    if (!o || o.length < 30) return null;
+    // OBV needs volume, so on 1D read it over the bars that have volume (the regular session);
+    // extended-hours bars carry no volume in this feed and would make it look flat.
+    const s = quote?.session;
+    const keepIdx = bars.map((b, i) => (range === '1d' && s && (b.time < s.start || b.time >= s.end) ? -1 : i)).filter((i) => i >= 0);
+    const o = keepIdx.map((i) => lines.obv?.[i]).filter(Boolean);
+    const px = keepIdx.map((i) => bars[i]);
+    if (o.length < 30) return null;
     // Compare OBV slope with price slope over the last ~20% of bars (min 20).
     const n = Math.max(20, Math.floor(o.length * 0.2));
     const dObv = o.at(-1).value - o.at(-n).value;
-    const p1 = bars.at(-n)?.close, p2 = bars.at(-1)?.close;
+    const p1 = px.at(-n)?.close, p2 = px.at(-1)?.close;
     if (p1 == null || p2 == null) return null;
     const dPx = p2 - p1;
     const up = dObv > 0, pxUp = dPx > 0;
@@ -575,6 +602,19 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
           {isSpike ? `This bar: volume spike (≥${SPIKE_X}× normal)` : `${spikeCount} volume spike${spikeCount === 1 ? '' : 's'} (≥${SPIKE_X}× normal)`}
         </span>
       </div>
+
+      {extRanges.length > 0 && (
+        <div className="ext-legend">
+          <span className="layer-swatch ext" aria-hidden="true" />
+          <span>
+            Shaded = {extRanges.map((r) => (r.kind === 'pre' ? 'pre-market (4:00–9:30 AM)' : 'after hours (4:00–8:00 PM)')).join(' and ')} ET.
+            Prices are live; the free data feed has no per-minute volume for these sessions, so those volume bars are empty
+            {extended?.volume != null
+              ? `. Session total from Nasdaq: ${fmtVolume(extended.volume)} shares${extended.volPctOfDay != null ? ` (${extended.volPctOfDay.toFixed(1)}% of a normal day)` : ''}.`
+              : '.'}
+          </span>
+        </div>
+      )}
 
       <div ref={containerRef} className="chart" />
     </div>

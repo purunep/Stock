@@ -113,6 +113,11 @@ function normalise(json, { intraday = false } = {}) {
     (state === 'PRE' || state === 'POST') && lastBar && lastBar.time > (meta.regularMarketTime ?? 0)
       ? lastBar.close
       : null;
+  // Change of the extended-hours price vs. the reference it trades against:
+  // after hours vs today's close; pre-market vs the previous close.
+  const extRef = state === 'POST' ? price : state === 'PRE' ? prevClose : null;
+  const extChangePct = extPrice != null && extRef ? ((extPrice - extRef) / extRef) * 100 : null;
+  const tp = meta.currentTradingPeriod;
 
   return {
     quote: {
@@ -133,7 +138,11 @@ function normalise(json, { intraday = false } = {}) {
       fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh ?? null,
       fiftyTwoWeekLow: meta.fiftyTwoWeekLow ?? null,
       extPrice,
+      extChangePct,
       marketState: state,
+      // Pre-market (4:00-9:30 ET) and after-hours (16:00-20:00 ET) windows, unix sec.
+      pre: tp?.pre ? { start: tp.pre.start, end: tp.pre.end } : null,
+      post: tp?.post ? { start: tp.post.start, end: tp.post.end } : null,
       // Regular-session window (unix sec) for the current/most recent trading day.
       session: meta.currentTradingPeriod?.regular
         ? { start: meta.currentTradingPeriod.regular.start, end: meta.currentTradingPeriod.regular.end }
@@ -380,6 +389,45 @@ async function nasdaqAdvancers() {
   return rows
     .map((x) => ({ symbol: x.symbol, name: x.name, price: num(x.lastSalePrice), changePct: num(x.change) }))
     .filter((x) => /^[A-Z.]{1,6}$/.test(x.symbol) && x.price >= MOVER_RULES.minPrice && x.changePct > 0);
+}
+
+/**
+ * Pre-market / after-hours session totals from Nasdaq.com. Yahoo's free feed carries
+ * extended-hours *prices* but reports their volume as 0, so this is the volume source for
+ * those sessions. US-listed stocks and ETFs only; resolves to null otherwise. Never throws.
+ */
+export async function getExtendedSession(symbol, session /* 'pre' | 'post' */) {
+  if (!/^[A-Z.]{1,6}$/.test(symbol) || (session !== 'pre' && session !== 'post')) return null;
+  return cached(`ext:${symbol}:${session}`, 30_000, async () => {
+    const num = (s) => {
+      const v = Number(String(s ?? '').replace(/[^0-9.\-]/g, ''));
+      return Number.isFinite(v) ? v : null;
+    };
+    for (const assetclass of ['stocks', 'etf']) {
+      try {
+        const r = await fetch(
+          `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/extended-trading?markettype=${session}&assetclass=${assetclass}&time=0`,
+          { headers: NASDAQ_HEADERS, signal: AbortSignal.timeout(4000) },
+        );
+        if (!r.ok) continue;
+        const row = (await r.json())?.data?.infoTable?.rows?.[0];
+        if (!row?.volume) continue;
+        // "consolidated" looks like "$344.98 +2.61 (+0.76%)"; high/low like "$350.7 (04:00:42 PM)".
+        const last = num(String(row.consolidated).split(' ')[0]);
+        return {
+          session,
+          volume: num(row.volume),
+          last,
+          high: num(String(row.highPrice).split(' ')[0]),
+          low: num(String(row.lowPrice).split(' ')[0]),
+          source: 'nasdaq',
+        };
+      } catch {
+        /* try the next asset class */
+      }
+    }
+    return null;
+  }).catch(() => null);
 }
 
 /** Market cap from Nasdaq's quote summary (used when Yahoo's screener data is unavailable). */
