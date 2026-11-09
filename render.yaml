@@ -1,0 +1,15 @@
+# Render blueprint: one free web service that serves both the API/WebSocket and the built UI.
+# Deploy: push this repo to GitHub, then Render dashboard > New > Blueprint > pick the repo.
+services:
+  - type: web
+    name: stock-live
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22
