@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { fmtPrice, fmtPct, fmtVolume } from './format.js';
 
-const REFRESH_MS = 30_000;
+// The server re-prices the leaders every 2 s in pre-market / after hours (when moves are fast
+// and thin), and every 30 s in the regular session. Poll to match.
+const REFRESH_MS = { regular: 30_000, pre: 2_000, post: 2_000 };
 
 // Panel wording per session. The server picks the session from the US market clock.
 const MODE = {
@@ -14,13 +16,13 @@ const MODE = {
   post: {
     title: 'After-hours gainers',
     tag: 'After hours',
-    sub: '4:00–8:00 PM ET · refreshed every 30 s',
+    sub: '4:00–8:00 PM ET · live',
     vs: 'vs 4:00 PM close',
   },
   pre: {
     title: 'Pre-market gainers',
     tag: 'Pre-market',
-    sub: '4:00–9:30 AM ET · refreshed every 30 s',
+    sub: '4:00–9:30 AM ET · live',
     vs: 'vs previous close',
   },
 };
@@ -31,22 +33,42 @@ export default function TopMovers({ current, onSelect }) {
 
   useEffect(() => {
     let alive = true;
+    let timer;
+    let mode = 'regular';
+    let loaded = false;
     const load = async () => {
       try {
-        const res = await fetch('/api/movers');
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Failed to load movers');
-        if (alive) setState({ data: json, error: null });
+        // Always load once; after that, skip polling while the tab is hidden.
+        if (!loaded || document.visibilityState === 'visible') {
+          const res = await fetch('/api/movers');
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Failed to load movers');
+          mode = json.mode || 'regular';
+          loaded = true;
+          if (alive) setState({ data: json, error: null });
+        }
       } catch (e) {
         if (alive) setState((s) => ({ data: s.data, error: e.message }));
       }
+      // Hidden tabs re-check slowly (browsers throttle timers anyway).
+      const wait = document.visibilityState === 'visible' ? REFRESH_MS[mode] ?? 30_000 : 30_000;
+      if (alive) timer = setTimeout(load, wait);
     };
+    // Coming back to the tab: refresh straight away instead of waiting for the next tick.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && alive) {
+        clearTimeout(timer);
+        load();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
     load();
-    const t = setInterval(load, REFRESH_MS);
     return () => {
       alive = false;
-      clearInterval(t);
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const { data, error } = state;
@@ -64,7 +86,14 @@ export default function TopMovers({ current, onSelect }) {
           {m.title}
           <span className={`session-tag session-${mode}`}>{m.tag}</span>
         </h2>
-        <div className="movers-sub">{sub}</div>
+        <div className="movers-sub">
+          {sub}
+          {extended && data?.live && data.updatedAt && (
+            <span className="movers-age" title="Prices of the leaders are refreshed every 2 s; the whole market is re-scanned every 20 s.">
+              {' '}· updated {new Date(data.updatedAt).toLocaleTimeString()}
+            </span>
+          )}
+        </div>
       </div>
 
       {!data && !error && <p className="movers-empty">Loading…</p>}
@@ -115,9 +144,9 @@ export default function TopMovers({ current, onSelect }) {
           <>
             Biggest {mode === 'pre' ? 'pre-market' : 'after-hours'} % gainers {m.vs} (same basis as TradingView's
             {mode === 'pre' ? ' pre-market' : ' post-market'} change), scanning
-            {data?.scanned ? ` ${data.scanned.toLocaleString()}` : ' all'} US stocks on Nasdaq, NYSE and NYSE American. Kept
-            only at $1 or more, with at least 100k shares and 2% of {mode === 'pre' ? "the last session's" : "today's"}{' '}
-            volume traded in this session, since thin extended-hours moves often reverse at the open.
+            {data?.scanned ? ` ${data.scanned.toLocaleString()}` : ' all'} US stocks on Nasdaq, NYSE and NYSE American every
+            20 s, with the leaders re-priced every 2 s. Kept only at $1 or more with at least 50k shares and $1M traded in
+            this session, so a few tiny trades can't top the list.
             {data?.candidates != null && ` ${data.candidates} stocks qualify right now.`}
           </>
         ) : (
@@ -153,21 +182,23 @@ function RegVolume({ x }) {
 /** Extended hours: shares traded this session, as a share of a normal full day. */
 function ExtVolume({ x, mode }) {
   const pct = x.volPctOfDay;
+  const dollars = x.dollarVolume ?? x.volume * x.price;
   return (
     <span className="mover-vol">
       <span title={`Shares traded in this ${mode === 'pre' ? 'pre-market' : 'after-hours'} session (Nasdaq)`}>
         {mode === 'pre' ? 'Pre' : 'AH'} vol <strong>{fmtVolume(x.volume)}</strong>
       </span>
-      <span
-        className="rvol"
-        title={`This session's volume as a % of ${mode === 'pre' ? "the last session's" : "today's"} regular-session volume. Extended hours usually trade 2–5%.`}
-      >
-        <strong>{pct >= 100 ? `${(pct / 100).toFixed(1)}×` : `${pct.toFixed(0)}%`}</strong> of {mode === 'pre' ? 'last day' : 'today'}
+      <span className="rvol" title="Dollar value traded in this session">
+        <strong>${fmtVolume(dollars)}</strong>
       </span>
-      <span className="rvol-bar" aria-hidden="true">
-        {/* 2% (the minimum) -> empty, 100%+ of a normal day -> full, log scale */}
-        <span style={{ width: `${Math.max(4, Math.min(100, (Math.log(pct / 2) / Math.log(50)) * 100))}%` }} />
-      </span>
+      {pct != null && (
+        <span
+          className="rvol"
+          title={`This session's volume vs ${mode === 'pre' ? "the last session's" : "today's"} regular-session volume. Extended hours usually trade 2–5%; far more means news.`}
+        >
+          <strong>{pct >= 100 ? `${(pct / 100).toFixed(1)}×` : `${pct.toFixed(0)}%`}</strong> of {mode === 'pre' ? 'last day' : 'today'}
+        </span>
+      )}
     </span>
   );
 }

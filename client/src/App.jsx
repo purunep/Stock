@@ -113,7 +113,7 @@ export default function App() {
 
           <SignalBadge
             analysis={analysis}
-            livePrice={!loading ? quote?.price : null}
+            livePrice={!loading ? quote?.extPrice ?? quote?.price : null}
             onDetails={() => recoRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
           />
 

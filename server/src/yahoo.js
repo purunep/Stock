@@ -572,12 +572,14 @@ async function moversWithoutSession() {
 // only used as a sanity floor; every filter that matters runs on today's live numbers.
 // (A stock that ran from $1.76 to $13 today, e.g. SMX, would otherwise be screened out.)
 // ---------------------------------------------------------------------------
+// Liquidity is judged on *this session's* trading, because news-driven movers often traded
+// little during the day and all the action is after the bell (e.g. TANH: 183k shares in the
+// regular session, then 250k shares / $5M+ in the first 45 minutes after hours).
 const EXT_RULES = {
   minPrice: 1, // extended-hours price
-  minTodayVolume: 300_000, // shares traded in today's regular session (live, from Yahoo)
-  minExtVolume: 100_000, // shares traded in this pre-market / after-hours session
-  minExtVolPct: 2, // extended-hours volume as % of today's regular-session volume
-  minMarketCap: 10e6, // live estimate: shares outstanding (from directory) x current price
+  minExtVolume: 50_000, // shares traded in this pre-market / after-hours session
+  minExtDollarVolume: 1_000_000, // $ traded in this session (shares x price)
+  minPrevActivity: 10_000, // directory: last session's volume, only to drop dead listings
   smallCap: 300e6,
 };
 
@@ -603,7 +605,7 @@ async function nasdaqUniverse() {
       })
       // Plain common-stock symbols only (no warrants / units / preferreds like ABCDW, ABC.U).
       // Very loose activity floor on the *previous* session: just drops dead listings.
-      .filter((x) => /^[A-Z]{1,5}$/.test(x.symbol) && x.prevVolume >= 10_000);
+      .filter((x) => /^[A-Z]{1,5}$/.test(x.symbol) && x.prevVolume >= EXT_RULES.minPrevActivity);
   });
 }
 
@@ -617,9 +619,11 @@ async function extendedLastPrices(symbols) {
     while (next < batches.length) {
       const b = batches[next++];
       try {
+        // Spark responses are CDN-cacheable ("public, max-age=300"), so add a cache-buster:
+        // otherwise a repeated batch URL can return a price several minutes old.
         const r = await fetch(
-          `https://query2.finance.yahoo.com/v7/finance/spark?symbols=${b.join(',')}&range=1d&interval=1m&includePrePost=true`,
-          { headers: HEADERS, signal: AbortSignal.timeout(10_000) },
+          `https://query2.finance.yahoo.com/v7/finance/spark?symbols=${b.join(',')}&range=1d&interval=1m&includePrePost=true&_=${Date.now()}`,
+          { headers: { ...HEADERS, 'Cache-Control': 'no-cache' }, signal: AbortSignal.timeout(10_000) },
         );
         if (!r.ok) {
           failures++;
@@ -666,38 +670,26 @@ async function moversSession() {
   return { mode: 'post', live: false };
 }
 
-async function getExtendedMovers(mode, limit) {
-  const universe = await nasdaqUniverse();
-  const prices = await extendedLastPrices(universe.map((u) => u.symbol));
-  const info = new Map(universe.map((u) => [u.symbol, u]));
-
-  // % change of the latest extended-hours trade vs the reference close. The last trade must
-  // fall inside *this* session's window: after hours = after today's 16:00 close; pre-market =
-  // before 9:30 and after the previous close. (Otherwise a forced "pre" view in the evening
-  // would just re-list after-hours trades.)
-  const spy = (await getChart('SPY', '1d').catch(() => null))?.quote;
-  const win = mode === 'pre' ? spy?.pre : spy?.post;
+/**
+ * Rank extended-hours gainers from a price map (symbol -> spark row).
+ * Pure apart from the Nasdaq volume lookups (each cached for 30 s).
+ */
+async function rankExtended(mode, prices, info, win) {
   const inWindow = (t) => (win ? t >= win.start && t < win.end : true);
-  // Reference close: after hours = today's 4:00 PM close; pre-market = the previous close.
+  // % change of the latest trade vs the reference close (after hours: today's 4:00 PM close;
+  // pre-market: the previous close). The last trade must be inside *this* session's window.
   const ranked = [];
   for (const [symbol, p] of prices) {
     if (!(p.lastTime > (p.refTime ?? 0) + 60) || !inWindow(p.lastTime) || p.last < EXT_RULES.minPrice) continue;
     if (p.type && p.type !== 'EQUITY') continue; // skip ETFs/funds that slipped into the directory
     if (p.exchangeCode && !CHART_EXCHANGES.has(p.exchangeCode)) continue; // main US exchanges only
-    const ref = p.ref;
-    if (!ref) continue;
-    const changePct = ((p.last - ref) / ref) * 100;
-    // Liquidity on *today's* numbers (the directory's are yesterday's).
-    const u = info.get(symbol);
-    const todayVolume = mode === 'post' ? p.todayVolume : u?.prevVolume ?? 0; // pre-market: today hasn't traded yet
-    if (todayVolume < EXT_RULES.minTodayVolume) continue;
-    const marketCap = u?.shares ? u.shares * p.last : null;
-    if (marketCap != null && marketCap < EXT_RULES.minMarketCap) continue;
-    if (changePct > 0) ranked.push({ symbol, ...p, ref, changePct, todayVolume, marketCap });
+    if (!p.ref) continue;
+    const changePct = ((p.last - p.ref) / p.ref) * 100;
+    if (changePct > 0) ranked.push({ symbol, ...p, changePct });
   }
   ranked.sort((a, b) => b.changePct - a.changePct);
 
-  // Check real session volume (and Nasdaq's live last trade) for the top gainers.
+  // Check this session's real volume for the top gainers (Nasdaq; Yahoo reports 0).
   const rows = [];
   const pool = ranked.slice(0, 40);
   let next = 0;
@@ -707,26 +699,24 @@ async function getExtendedMovers(mode, limit) {
       const ext = await getExtendedSession(c.symbol, mode);
       const u = info.get(c.symbol);
       if (!ext?.volume || !u) continue;
-      const volPct = (ext.volume / c.todayVolume) * 100;
-      if (ext.volume < EXT_RULES.minExtVolume || volPct < EXT_RULES.minExtVolPct) continue;
-      // Price: Yahoo's latest 1-minute close. (Nasdaq's "consolidated last trade" on the
-      // extended-trading page lags and can even be a regular-session print, so only its
-      // session volume is used.) Change is vs the 4:00 PM close, like TradingView's
-      // "post-market change %"; pre-market it's vs the previous close.
-      const price = c.last;
-      const changePct = c.changePct;
-      const marketCap = u.shares ? u.shares * price : null;
+      const dollars = ext.volume * c.last;
+      if (ext.volume < EXT_RULES.minExtVolume || dollars < EXT_RULES.minExtDollarVolume) continue;
+      // Price: Yahoo's latest 1-minute close (Nasdaq's extended "last trade" lags), so the
+      // % change matches TradingView's post-/pre-market change.
+      const dayVolume = mode === 'post' ? c.todayVolume : u.prevVolume;
+      const marketCap = u.shares ? u.shares * c.last : null;
       rows.push({
         symbol: c.symbol,
         name: c.name || u.name,
         exchange: c.exchange,
-        price,
+        price: c.last,
         refPrice: c.ref,
-        change: price - c.ref,
-        changePct,
+        change: c.last - c.ref,
+        changePct: c.changePct,
         volume: ext.volume,
-        dayVolume: c.todayVolume,
-        volPctOfDay: volPct,
+        dollarVolume: dollars,
+        dayVolume,
+        volPctOfDay: dayVolume ? (ext.volume / dayVolume) * 100 : null,
         rvol: null,
         marketCap,
         smallCap: marketCap != null && marketCap < EXT_RULES.smallCap,
@@ -736,7 +726,97 @@ async function getExtendedMovers(mode, limit) {
   };
   await Promise.all(Array.from({ length: 8 }, worker));
   rows.sort((a, b) => b.changePct - a.changePct);
-  return { rows, scanned: prices.size, movedUp: ranked.length };
+  return { rows, movedUp: ranked.length, pool: pool.map((c) => c.symbol) };
+}
+
+// ---------------------------------------------------------------------------
+// Live extended-hours scanner. Runs in the background while someone is looking:
+//   - full scan of every stock every FULL_MS (finds new movers anywhere in the market)
+//   - fast refresh of the current top-40 candidates every FAST_MS (keeps prices live)
+// Requests just read the latest snapshot, so they return instantly.
+// It stops itself when nobody has asked for movers for IDLE_MS.
+// ---------------------------------------------------------------------------
+const SCAN = { FULL_MS: 20_000, FAST_MS: 2_000, IDLE_MS: 60_000 };
+const scanner = { mode: null, snapshot: null, pool: [], prices: new Map(), info: null, win: null, lastAsked: 0, timers: [], busyFull: false, busyFast: false, lastFull: 0 };
+
+async function scannerContext(mode) {
+  const universe = await nasdaqUniverse();
+  const spy = (await getChart('SPY', '1d').catch(() => null))?.quote;
+  return { info: new Map(universe.map((u) => [u.symbol, u])), symbols: universe.map((u) => u.symbol), win: mode === 'pre' ? spy?.pre : spy?.post };
+}
+
+function publish(mode, live, result, scanned) {
+  scanner.snapshot = {
+    mode,
+    live,
+    movers: result.rows.slice(0, 3),
+    candidates: result.rows.length,
+    scanned,
+    movedUp: result.movedUp,
+    source: 'yahoo-spark+nasdaq',
+    rules: EXT_RULES,
+    fullScanAt: scanner.lastFull,
+    updatedAt: Date.now(),
+  };
+  scanner.pool = result.pool;
+}
+
+async function fullScan(mode, live) {
+  if (scanner.busyFull) return;
+  scanner.busyFull = true;
+  try {
+    const ctx = await scannerContext(mode);
+    scanner.info = ctx.info;
+    scanner.win = ctx.win;
+    // Merge rather than replace, so a few failed batches don't drop stocks from the list.
+    const fresh = await extendedLastPrices(ctx.symbols);
+    for (const [s, p] of fresh) scanner.prices.set(s, p);
+    scanner.lastFull = Date.now();
+    publish(mode, live, await rankExtended(mode, scanner.prices, scanner.info, scanner.win), scanner.prices.size);
+  } finally {
+    scanner.busyFull = false;
+  }
+}
+
+async function fastRefresh(mode, live) {
+  if (scanner.busyFast || scanner.busyFull || !scanner.pool.length || !scanner.info) return;
+  scanner.busyFast = true;
+  try {
+    // Re-price only the candidates (2 spark calls) and merge into the last full scan.
+    const fresh = await extendedLastPrices(scanner.pool);
+    for (const [s, p] of fresh) scanner.prices.set(s, p);
+    publish(mode, live, await rankExtended(mode, scanner.prices, scanner.info, scanner.win), scanner.prices.size);
+  } catch {
+    /* keep the previous snapshot */
+  } finally {
+    scanner.busyFast = false;
+  }
+}
+
+function stopScanner() {
+  scanner.timers.forEach(clearInterval);
+  scanner.timers = [];
+  scanner.mode = null;
+}
+
+/** Latest extended-hours movers; starts/keeps the background scanner running. */
+async function getExtendedSnapshot(mode, live) {
+  scanner.lastAsked = Date.now();
+  if (scanner.mode !== mode) {
+    stopScanner();
+    scanner.mode = mode;
+    scanner.snapshot = null;
+    scanner.pool = [];
+    scanner.prices = new Map();
+    const tickFull = () => fullScan(mode, live).catch(() => {});
+    const tickFast = () => fastRefresh(mode, live);
+    const idle = () => Date.now() - scanner.lastAsked > SCAN.IDLE_MS && stopScanner();
+    scanner.timers = [setInterval(tickFull, SCAN.FULL_MS), setInterval(tickFast, SCAN.FAST_MS), setInterval(idle, 10_000)];
+    scanner.timers.forEach((t) => t.unref?.());
+  }
+  if (!scanner.snapshot) await fullScan(mode, live); // first request waits for one scan
+  if (!scanner.snapshot) throw new Error('Extended-hours scan failed');
+  return scanner.snapshot;
 }
 
 /**
@@ -749,21 +829,7 @@ export async function getTopMovers(limit = 3, forceMode = null) {
   const sess = forceMode ? { mode: forceMode, live: true } : await moversSession().catch(() => ({ mode: 'regular', live: true }));
   if (sess.mode === 'pre' || sess.mode === 'post') {
     try {
-      // A full scan is ~280 batched Yahoo calls, so refresh at most every 30 s for everyone.
-      return await cached(`movers:${sess.mode}`, 30_000, async () => {
-        const { rows, scanned, movedUp } = await getExtendedMovers(sess.mode, limit);
-        return {
-          mode: sess.mode,
-          live: sess.live,
-          movers: rows.slice(0, limit),
-          candidates: rows.length,
-          scanned,
-          movedUp,
-          source: 'yahoo-spark+nasdaq',
-          rules: EXT_RULES,
-          updatedAt: Date.now(),
-        };
-      });
+      return await getExtendedSnapshot(sess.mode, sess.live);
     } catch (e) {
       // Fall back to the regular-session list, and say so.
       const reg = await getRegularMovers(limit);
