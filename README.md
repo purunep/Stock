@@ -173,6 +173,14 @@ The movers list uses Yahoo's full equity screener, the same data as the Gainers 
 
 (Yahoo's predefined `day_gainers` list only includes companies of about $2B and up, so it misses the small caps that usually top the real gainers board.)
 
+**Pre-market and after-hours gainers.** The panel follows the US market clock: from 4:00 to 9:30 AM ET it shows **Pre-market gainers**, from 9:30 AM to 4:00 PM the regular-session list above, and from 4:00 to 8:00 PM **After-hours gainers**. Overnight and at weekends it shows the last after-hours session, marked as closed. Neither Yahoo nor Nasdaq has a free extended-hours gainers list, so the server builds one:
+1. It scans every plain US stock symbol in Nasdaq's directory (about 5,600 with any recent trading).
+2. Yahoo's batch price endpoint (20 symbols per call, no session needed) gives each one's latest extended-hours trade, today's close and today's volume.
+3. Change is measured the way TradingView does: after hours vs today's 4:00 PM close; pre-market vs the previous close. Only stocks whose last trade falls inside the current session count.
+4. The top 40 by % gain are checked on Nasdaq for real volume in this session. A stock is kept only if it's on a main exchange, at least $1, with at least 300k shares traded in the last regular session, and at least 100k shares and 2% of that day's volume traded in this extended session. Thin extended-hours moves often reverse at the open. Market cap is estimated live (shares outstanding × current price), so a stock that ran up today isn't held back by yesterday's size.
+
+A full scan takes about 6–10 seconds and is cached for 30 seconds, so it runs at most twice a minute however many people have the page open. To check a session outside its hours, add `?session=post` or `?session=regular` to `/api/movers`.
+
 **Fallback when Yahoo's session is blocked.** Yahoo's full screener and analyst data need a session cookie and "crumb" token. Yahoo often refuses to give these to cloud servers, including Render's. When that happens, the movers list is built without a session instead:
 1. Candidates are taken from Nasdaq.com's "most advanced" list plus Yahoo's predefined `day_gainers` and `small_cap_gainers` lists.
 2. The top 40 are each checked through Yahoo's chart endpoint (no session needed) for exchange, today's volume and 3-month average volume.

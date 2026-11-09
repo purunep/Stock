@@ -77,9 +77,12 @@ app.get('/api/chart/:symbol', async (req, res) => {
   }
 });
 
-app.get('/api/movers', async (_req, res) => {
+app.get('/api/movers', async (req, res) => {
+  // ?session=post|regular overrides the clock (handy for checking a session outside its hours).
+  // A forced 'pre' outside pre-market hours returns an empty list, since no trades fall in it.
+  const force = ['pre', 'post', 'regular'].includes(req.query.session) ? req.query.session : null;
   try {
-    res.json(await getTopMovers(3));
+    res.json(await getTopMovers(3, force));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }

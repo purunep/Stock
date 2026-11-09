@@ -561,12 +561,219 @@ async function moversWithoutSession() {
   return prelim.filter(passesRules);
 }
 
+// ---------------------------------------------------------------------------
+// Extended-hours movers (pre-market 4:00-9:30 / after hours 16:00-20:00 ET).
+// Neither Yahoo nor Nasdaq offers a free "after-hours gainers" list, so we build one:
+//   1. universe: every plain US-listed stock symbol (Nasdaq's directory, cached 15 min)
+//   2. latest price for all of them via Yahoo's batch spark endpoint (20 symbols per call,
+//      no session needed): today's close, today's volume and the extended-hours last trade
+//   3. the biggest gainers are checked for real extended-hours volume via Nasdaq
+// The directory's own price / market cap / volume are the *previous* session's, so they're
+// only used as a sanity floor; every filter that matters runs on today's live numbers.
+// (A stock that ran from $1.76 to $13 today, e.g. SMX, would otherwise be screened out.)
+// ---------------------------------------------------------------------------
+const EXT_RULES = {
+  minPrice: 1, // extended-hours price
+  minTodayVolume: 300_000, // shares traded in today's regular session (live, from Yahoo)
+  minExtVolume: 100_000, // shares traded in this pre-market / after-hours session
+  minExtVolPct: 2, // extended-hours volume as % of today's regular-session volume
+  minMarketCap: 10e6, // live estimate: shares outstanding (from directory) x current price
+  smallCap: 300e6,
+};
+
+async function nasdaqUniverse() {
+  return cached('nasdaq:universe', 15 * 60_000, async () => {
+    const r = await fetch('https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&offset=0&download=true', {
+      headers: NASDAQ_HEADERS,
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!r.ok) throw new Error(`Nasdaq list ${r.status}`);
+    const num = (s) => Number(String(s ?? '').replace(/[^0-9.\-]/g, '')) || 0;
+    return ((await r.json())?.data?.rows || [])
+      .map((x) => {
+        const lastSale = num(x.lastsale);
+        const marketCap = num(x.marketCap);
+        return {
+          symbol: x.symbol,
+          name: String(x.name || x.symbol).replace(/ (Common Stock|Common Shares|Ordinary Shares|Class [A-Z] .*Stock).*$/i, ''),
+          // Shares outstanding barely changes day to day, so cap / price gives a live cap later.
+          shares: lastSale > 0 && marketCap > 0 ? marketCap / lastSale : null,
+          prevVolume: num(x.volume),
+        };
+      })
+      // Plain common-stock symbols only (no warrants / units / preferreds like ABCDW, ABC.U).
+      // Very loose activity floor on the *previous* session: just drops dead listings.
+      .filter((x) => /^[A-Z]{1,5}$/.test(x.symbol) && x.prevVolume >= 10_000);
+  });
+}
+
+/** Latest price per symbol incl. extended hours, via Yahoo spark (batches of 20). */
+async function extendedLastPrices(symbols) {
+  const batches = [];
+  for (let i = 0; i < symbols.length; i += 20) batches.push(symbols.slice(i, i + 20));
+  const out = new Map();
+  let next = 0, failures = 0;
+  const worker = async () => {
+    while (next < batches.length) {
+      const b = batches[next++];
+      try {
+        const r = await fetch(
+          `https://query2.finance.yahoo.com/v7/finance/spark?symbols=${b.join(',')}&range=1d&interval=1m&includePrePost=true`,
+          { headers: HEADERS, signal: AbortSignal.timeout(10_000) },
+        );
+        if (!r.ok) {
+          failures++;
+          continue;
+        }
+        for (const res of (await r.json())?.spark?.result || []) {
+          const resp = res.response?.[0];
+          const m = resp?.meta;
+          const closes = resp?.indicators?.quote?.[0]?.close || [];
+          const ts = resp?.timestamp || [];
+          let i = closes.length - 1;
+          while (i >= 0 && closes[i] == null) i--;
+          if (!m || i < 0 || !m.regularMarketPrice) continue;
+          out.set(res.symbol, {
+            ref: m.regularMarketPrice, // last regular-session price (today's or yesterday's close)
+            refTime: m.regularMarketTime,
+            prevClose: m.chartPreviousClose ?? m.previousClose ?? null,
+            todayVolume: m.regularMarketVolume ?? 0,
+            last: closes[i],
+            lastTime: ts[i],
+            exchange: m.fullExchangeName || m.exchangeName,
+            exchangeCode: m.exchangeName,
+            type: m.instrumentType,
+            name: m.shortName || m.longName || null,
+          });
+        }
+      } catch {
+        failures++;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  if (!out.size) throw new Error(`Extended-hours prices unavailable (${failures} failed batches)`);
+  return out;
+}
+
+/** Map a quote marketState onto which extended session's movers to show. */
+async function moversSession() {
+  const q = (await getChart('SPY', '1d')).quote;
+  if (q.marketState === 'PRE') return { mode: 'pre', live: true };
+  if (q.marketState === 'POST') return { mode: 'post', live: true };
+  if (q.marketState === 'REGULAR') return { mode: 'regular', live: true };
+  // Overnight / weekend: the most recent extended session is the last after-hours one.
+  return { mode: 'post', live: false };
+}
+
+async function getExtendedMovers(mode, limit) {
+  const universe = await nasdaqUniverse();
+  const prices = await extendedLastPrices(universe.map((u) => u.symbol));
+  const info = new Map(universe.map((u) => [u.symbol, u]));
+
+  // % change of the latest extended-hours trade vs the reference close. The last trade must
+  // fall inside *this* session's window: after hours = after today's 16:00 close; pre-market =
+  // before 9:30 and after the previous close. (Otherwise a forced "pre" view in the evening
+  // would just re-list after-hours trades.)
+  const spy = (await getChart('SPY', '1d').catch(() => null))?.quote;
+  const win = mode === 'pre' ? spy?.pre : spy?.post;
+  const inWindow = (t) => (win ? t >= win.start && t < win.end : true);
+  // Reference close: after hours = today's 4:00 PM close; pre-market = the previous close.
+  const ranked = [];
+  for (const [symbol, p] of prices) {
+    if (!(p.lastTime > (p.refTime ?? 0) + 60) || !inWindow(p.lastTime) || p.last < EXT_RULES.minPrice) continue;
+    if (p.type && p.type !== 'EQUITY') continue; // skip ETFs/funds that slipped into the directory
+    if (p.exchangeCode && !CHART_EXCHANGES.has(p.exchangeCode)) continue; // main US exchanges only
+    const ref = p.ref;
+    if (!ref) continue;
+    const changePct = ((p.last - ref) / ref) * 100;
+    // Liquidity on *today's* numbers (the directory's are yesterday's).
+    const u = info.get(symbol);
+    const todayVolume = mode === 'post' ? p.todayVolume : u?.prevVolume ?? 0; // pre-market: today hasn't traded yet
+    if (todayVolume < EXT_RULES.minTodayVolume) continue;
+    const marketCap = u?.shares ? u.shares * p.last : null;
+    if (marketCap != null && marketCap < EXT_RULES.minMarketCap) continue;
+    if (changePct > 0) ranked.push({ symbol, ...p, ref, changePct, todayVolume, marketCap });
+  }
+  ranked.sort((a, b) => b.changePct - a.changePct);
+
+  // Check real session volume (and Nasdaq's live last trade) for the top gainers.
+  const rows = [];
+  const pool = ranked.slice(0, 40);
+  let next = 0;
+  const worker = async () => {
+    while (next < pool.length) {
+      const c = pool[next++];
+      const ext = await getExtendedSession(c.symbol, mode);
+      const u = info.get(c.symbol);
+      if (!ext?.volume || !u) continue;
+      const volPct = (ext.volume / c.todayVolume) * 100;
+      if (ext.volume < EXT_RULES.minExtVolume || volPct < EXT_RULES.minExtVolPct) continue;
+      // Price: Yahoo's latest 1-minute close. (Nasdaq's "consolidated last trade" on the
+      // extended-trading page lags and can even be a regular-session print, so only its
+      // session volume is used.) Change is vs the 4:00 PM close, like TradingView's
+      // "post-market change %"; pre-market it's vs the previous close.
+      const price = c.last;
+      const changePct = c.changePct;
+      const marketCap = u.shares ? u.shares * price : null;
+      rows.push({
+        symbol: c.symbol,
+        name: c.name || u.name,
+        exchange: c.exchange,
+        price,
+        refPrice: c.ref,
+        change: price - c.ref,
+        changePct,
+        volume: ext.volume,
+        dayVolume: c.todayVolume,
+        volPctOfDay: volPct,
+        rvol: null,
+        marketCap,
+        smallCap: marketCap != null && marketCap < EXT_RULES.smallCap,
+        lastTradeTime: c.lastTime,
+      });
+    }
+  };
+  await Promise.all(Array.from({ length: 8 }, worker));
+  rows.sort((a, b) => b.changePct - a.changePct);
+  return { rows, scanned: prices.size, movedUp: ranked.length };
+}
+
 /**
- * Today's biggest US gainers (sorted by % gain, like Yahoo's Gainers page) that are also
- * trading on unusually high volume (>= 1.5x their 3-month average). Uses Yahoo's full
- * screener when a session is available, otherwise a session-free fallback.
+ * Top gainers on high volume for whichever US session is on now:
+ *   regular hours -> today's gainers vs their 3-month average volume
+ *   pre-market / after hours -> gainers in that extended session, on real session volume
+ * `forceMode` ('pre' | 'post' | 'regular') overrides the clock, for testing.
  */
-export async function getTopMovers(limit = 3) {
+export async function getTopMovers(limit = 3, forceMode = null) {
+  const sess = forceMode ? { mode: forceMode, live: true } : await moversSession().catch(() => ({ mode: 'regular', live: true }));
+  if (sess.mode === 'pre' || sess.mode === 'post') {
+    try {
+      // A full scan is ~280 batched Yahoo calls, so refresh at most every 30 s for everyone.
+      return await cached(`movers:${sess.mode}`, 30_000, async () => {
+        const { rows, scanned, movedUp } = await getExtendedMovers(sess.mode, limit);
+        return {
+          mode: sess.mode,
+          live: sess.live,
+          movers: rows.slice(0, limit),
+          candidates: rows.length,
+          scanned,
+          movedUp,
+          source: 'yahoo-spark+nasdaq',
+          rules: EXT_RULES,
+          updatedAt: Date.now(),
+        };
+      });
+    } catch (e) {
+      // Fall back to the regular-session list, and say so.
+      const reg = await getRegularMovers(limit);
+      return { ...reg, note: `${sess.mode === 'pre' ? 'Pre-market' : 'After-hours'} data unavailable (${e.message}); showing regular-session gainers.` };
+    }
+  }
+  return getRegularMovers(limit);
+}
+
+async function getRegularMovers(limit = 3) {
   return cached('movers', 30_000, async () => {
     let rows, source;
     try {
@@ -578,6 +785,8 @@ export async function getTopMovers(limit = 3) {
     }
     rows.sort((a, b) => b.changePct - a.changePct);
     return {
+      mode: 'regular',
+      live: true,
       movers: rows.slice(0, limit).map(toMover),
       candidates: rows.length,
       source,
