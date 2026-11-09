@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
-import { getChart, getWarmup, search, getTopMovers, isValidSymbol, RANGES } from './yahoo.js';
+import { getChart, getWarmup, search, getTopMovers, diagnose, isValidSymbol, RANGES } from './yahoo.js';
 import { analyse } from './analysis.js';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -26,6 +26,14 @@ if (!IS_PROD) app.use(cors());
 
 // Health check (used by the host to know the service is up) — before the rate limiter.
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// Reports which upstream data sources are reachable from this server (handy on a new host,
+// where cloud IPs are sometimes treated differently by Yahoo). Cached so it can't be abused.
+let diagCache = { at: 0, value: null };
+app.get('/api/diagnostics', async (_req, res) => {
+  if (Date.now() - diagCache.at > 60_000) diagCache = { at: Date.now(), value: await diagnose() };
+  res.json({ node: process.version, env: process.env.NODE_ENV || 'development', checks: diagCache.value });
+});
 
 // Tiny per-IP rate limit for /api (no extra dependency). Cached upstream data makes most
 // calls cheap, but search/analysis for unseen symbols hit Yahoo, so cap abusive clients.

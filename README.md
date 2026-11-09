@@ -79,6 +79,7 @@ Then open http://localhost:8080.
 | `GET /api/chart/:symbol?range=1d` | Quote + OHLCV bars. Ranges: `1d 5d 1mo 6mo 1y 5y` |
 | `GET /api/analysis/:symbol` | Buy/sell recommendation with per-signal breakdown, intraday signals and probability |
 | `GET /api/movers` | Top 3 US gainers on high relative volume |
+| `GET /api/diagnostics` | Which upstream data sources this server can reach |
 | `WS /ws` | Send `{"type":"subscribe","symbol":"AAPL","range":"1d"}` to get a `snapshot`, then a `tick` on each poll |
 
 ## How the recommendation works
@@ -144,6 +145,17 @@ The rating is **High** when the hit rate is at least 60%, at least 5 points bett
 The movers list uses Yahoo's full equity screener, the same data as the Gainers page on finance.yahoo.com, sorted by % gain. It is limited to Nasdaq, NYSE, NYSE American, Cboe BZX and NYSE Arca, so OTC penny stocks are excluded. It then keeps stocks priced at least $1, with at least 500k shares traded, a market cap of at least $50M, and at least **1.5× their 3-month average volume**. Stocks under $300M market cap get a "Small cap" tag, since they move more and are riskier. The list refreshes every 30 seconds.
 
 (Yahoo's predefined `day_gainers` list only includes companies of about $2B and up, so it misses the small caps that usually top the real gainers board.)
+
+**Fallback when Yahoo's session is blocked.** Yahoo's full screener and analyst data need a session cookie and "crumb" token. Yahoo often refuses to give these to cloud servers, including Render's. When that happens, the movers list is built without a session instead:
+1. Candidates are taken from Nasdaq.com's "most advanced" list plus Yahoo's predefined `day_gainers` and `small_cap_gainers` lists.
+2. The top 40 are each checked through Yahoo's chart endpoint (no session needed) for exchange, today's volume and 3-month average volume.
+3. Market cap comes from Nasdaq's quote summary.
+
+The same rules apply. The API response's `source` field says which path was used (`yahoo-screener` or `nasdaq+yahoo-chart`). Symbol search likewise falls back to Nasdaq's lookup when Yahoo search returns nothing.
+
+On a host where the session is blocked, **analyst ratings and earnings dates are unavailable**: the signal falls back to technical and intraday data only, and the panel shows "No coverage".
+
+**Diagnostics:** open `/api/diagnostics` on your deployed site to see which data sources the server can reach.
 
 **Price levels.** The badge next to the symbol shows an entry, target and stop for the current price. These are sized by ATR(14), the average daily range: the stop is 1.5 ATR away, and the target is the nearest analyst target or 20-day high/low at least 1.5 ATR away, otherwise 3 ATR. The analysis refreshes every minute, so the levels follow the live price.
 
