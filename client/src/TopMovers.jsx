@@ -126,6 +126,14 @@ export default function TopMovers({ current, onSelect }) {
                   )}
                 </span>
                 <span className="mover-name">{x.name}</span>
+                {x.catalyst && (
+                  <span
+                    className={`mover-cat ${x.catalyst.tone > 0 ? 'tone-up' : x.catalyst.tone < 0 ? 'tone-down' : 'tone-flat'}`}
+                    title={x.catalyst.latest ? x.catalyst.latest.headline : 'No company news in the last 24 hours. A big move without news is more likely to reverse.'}
+                  >
+                    {x.catalyst.key === 'none' ? 'No news' : x.catalyst.label}
+                  </span>
+                )}
               </span>
               <span className="mover-px">
                 <span className="mover-chg" title={m.vs}>

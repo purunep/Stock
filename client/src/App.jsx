@@ -5,6 +5,7 @@ import Recommendation from './Recommendation.jsx';
 import SignalBadge from './SignalBadge.jsx';
 import TopMovers from './TopMovers.jsx';
 import AlignmentBar from './AlignmentBar.jsx';
+import NewsPanel, { CatalystLine, useNews } from './NewsPanel.jsx';
 import { useAnalysis } from './useAnalysis.js';
 import { useLiveFeed } from './useLiveFeed.js';
 import { fmtPrice, fmtChange, fmtPct, fmtVolume, fmtTime } from './format.js';
@@ -39,7 +40,9 @@ export default function App() {
   });
   const { quote, bars, warmup, resetSeq, status, error, loading } = useLiveFeed(symbol, range);
   const analysis = useAnalysis(symbol);
+  const news = useNews(symbol);
   const recoRef = useRef(null);
+  const newsRef = useRef(null);
 
   // Set the theme attribute *before* re-render so the chart reads the new CSS variables.
   const toggleTheme = () => {
@@ -132,6 +135,8 @@ export default function App() {
           </div>
         </section>
 
+        <CatalystLine news={news} onMore={() => newsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
+
         {analysis.data?.symbol === symbol && <AlignmentBar analysis={analysis.data} />}
 
         <div className="controls">
@@ -175,6 +180,8 @@ export default function App() {
           </dl>
         )}
       </main>
+
+      <NewsPanel symbol={symbol} news={news} panelRef={newsRef} />
 
       <Recommendation symbol={symbol} analysis={analysis} ref={recoRef} />
       </div>

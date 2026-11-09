@@ -10,6 +10,7 @@ import { clamp, pct, f2, signal, aggregate } from './scoring.js';
 import { intradaySignals } from './intraday.js';
 import { buildSamples, hitRate } from './backtest.js';
 import { alignmentFor } from './alignment.js';
+import { getCatalyst } from './news.js';
 
 /** Index of the most recent sign change of (a - b) within the last `lookback` bars, or -1. */
 function lastCross(a, b, lookback) {
@@ -366,6 +367,49 @@ function probabilityOf(hist, liveScore, dailyScore, intraday, earningsSoon, alig
   };
 }
 
+/**
+ * News check on top of the probability rating. It can only lower the rating, never raise it:
+ * headline wording is too noisy to be a reason to trust a setup more.
+ *   - a share offering / reverse split / bankruptcy against a Buy  -> at most Low
+ *   - negative news against a Buy, or positive news against a Sell -> at most Moderate
+ *   - a big move (>= 8% today or in extended hours) with no news at all -> at most Moderate
+ */
+function newsAdjust(p, catalyst, quote, intraday) {
+  if (!catalyst || p.direction === 0 || p.direction == null) return { ...p, checks: { ...p.checks, news: null } };
+  const order = ['Low', 'Moderate', 'High'];
+  let level = p.level;
+  const cap = (to) => {
+    if (order.indexOf(level) > order.indexOf(to)) level = to;
+  };
+  const reasons = [];
+  let check = 'neutral';
+  const structural = ['offering', 'reverse-split', 'bankruptcy'].includes(catalyst.key);
+  const bigMove = Math.max(Math.abs(quote?.changePct ?? 0), Math.abs(intraday?.extended?.changePct ?? 0)) >= 8;
+
+  if (p.direction === 1 && structural) {
+    cap('Low');
+    check = 'fail';
+    reasons.push(`News: ${catalyst.label.toLowerCase()}. That usually pressures the price, so the Buy is risky.`);
+  } else if (catalyst.tone !== 0 && catalyst.tone === -p.direction) {
+    cap('Moderate');
+    check = 'fail';
+    reasons.push(`Recent news reads ${catalyst.tone > 0 ? 'positive' : 'negative'}, against this call.`);
+  } else if (catalyst.key === 'none' && bigMove) {
+    cap('Moderate');
+    check = 'neutral';
+    reasons.push('Big move with no company news in the last 24 h, so it is more likely to reverse.');
+  } else if (catalyst.tone === p.direction && catalyst.fresh) {
+    check = 'pass';
+    reasons.push(`Recent news (${catalyst.label.toLowerCase()}) reads ${catalyst.tone > 0 ? 'positive' : 'negative'}, in line with this call.`);
+  }
+  return {
+    ...p,
+    level,
+    checks: { ...p.checks, news: check },
+    reason: reasons.length ? `${p.reason} ${reasons.join(' ')}` : p.reason,
+  };
+}
+
 export async function analyse(symbol) {
   const [daily, analyst, intraday, d1] = await Promise.all([
     getChart(symbol, '2y', { ttlMs: 60_000 }),
@@ -373,7 +417,10 @@ export async function analyse(symbol) {
     intradaySignals(symbol).catch((e) => ({ available: false, reason: e.message })),
     getChart(symbol, '1d').catch(() => null),
   ]);
-  const align = await alignmentFor(symbol, d1?.quote, d1?.bars).catch(() => null);
+  const [align, catalyst] = await Promise.all([
+    alignmentFor(symbol, d1?.quote, d1?.bars).catch(() => null),
+    getCatalyst(symbol, d1?.quote?.name),
+  ]);
   const bars = daily.bars;
   if (bars.length < 30) {
     const err = new Error('Not enough price history to analyse this symbol');
@@ -434,7 +481,8 @@ export async function analyse(symbol) {
       verdictKey: liveVerdict.key,
       intraday,
     },
-    probability: { ...probabilityOf(history, liveScore, score, intraday, earningsSoon, align), history },
+    probability: newsAdjust({ ...probabilityOf(history, liveScore, score, intraday, earningsSoon, align), history }, catalyst, d1?.quote, intraday),
+    catalyst,
     alignment: align,
     earnings: analyst?.nextEarnings ? { date: analyst.nextEarnings, daysAway: daysToEarnings, soon: earningsSoon } : null,
     priceAsOf: daily.quote.marketTime,

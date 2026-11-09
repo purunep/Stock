@@ -13,3 +13,7 @@ services:
         value: production
       - key: NODE_VERSION
         value: 22
+      # Secret: set its value in the Render dashboard (Environment tab). sync:false means it is
+      # never stored in this file or in git.
+      - key: FINNHUB_API_KEY
+        sync: false

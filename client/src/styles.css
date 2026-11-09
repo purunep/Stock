@@ -187,6 +187,52 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .ov-bias-mixed { color: var(--text-secondary); border-color: var(--axis); background: var(--wash); }
 @media (max-width: 720px) { .ov-bias { margin-left: 0; } }
 
+/* News: one-line catalyst under the quote */
+.catalyst {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; margin: -6px 0 10px; padding: 7px 12px;
+  border-radius: 8px; border: 1px solid var(--border); background: var(--surface-1); font-size: 13px;
+  text-align: left; overflow: hidden;
+}
+.catalyst:hover { background: var(--wash); }
+.catalyst-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); flex: none; }
+.catalyst > span[aria-hidden] { font-size: 10px; flex: none; }
+.catalyst strong { flex: none; }
+.catalyst-head { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.catalyst-age { color: var(--text-muted); font-size: 12px; flex: none; margin-left: auto; }
+.tone-up { color: var(--up-text); }
+.tone-down { color: var(--down-text); }
+.tone-flat { color: var(--text-secondary); }
+.catalyst.tone-up { border-color: color-mix(in srgb, var(--d-buy) 45%, transparent); }
+.catalyst.tone-down { border-color: color-mix(in srgb, var(--d-sell) 55%, transparent); }
+
+/* News card */
+.news { margin-top: 16px; }
+.news.is-dimmed { opacity: 0.6; }
+.news h2 { margin: 0; font-size: 16px; }
+.news-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.news-cat { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
+.news-cat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+.news-cat strong { font-size: 15px; }
+.news-cat strong span { font-size: 10px; }
+.news-cat-sub { font-size: 12px; color: var(--text-secondary); }
+.news-meaning { margin: 12px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--wash); font-size: 13px; }
+.news-list { list-style: none; margin: 12px 0 0; padding: 0; }
+.news-list li + li { border-top: 1px solid var(--grid); }
+.news-item { display: flex; gap: 10px; padding: 10px 4px; color: inherit; text-decoration: none; border-radius: 6px; }
+a.news-item:hover { background: var(--wash); }
+a.news-item:hover .news-title { text-decoration: underline; }
+.news-tone { flex: none; font-size: 10px; width: 14px; padding-top: 3px; }
+.news-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.news-title { font-weight: 600; font-size: 14px; color: var(--text-primary); }
+.news-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--text-muted); }
+.news-tag {
+  font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--axis); color: var(--text-secondary);
+  background: var(--surface-1);
+}
+.news-summary { font-size: 13px; color: var(--text-secondary); }
+.is-mention .news-title { font-weight: 500; color: var(--text-secondary); }
+@media (max-width: 720px) { .news-cat { align-items: flex-start; text-align: left; } .catalyst-age { margin-left: 0; } }
+
 /* Trend alignment strip */
 .align {
   display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; margin: -4px 0 14px; padding: 10px 12px;
@@ -395,6 +441,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
   font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; cursor: help;
   color: var(--text-primary); background: color-mix(in srgb, #fab219 25%, transparent); border: 1px solid #c98500;
 }
+.mover-cat {
+  align-self: flex-start; margin-top: 3px; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 4px;
+  border: 1px solid currentColor; cursor: help;
+}
+.mover-cat.tone-flat { border-color: var(--axis); }
 .mover-name { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mover-px { grid-area: px; display: flex; flex-direction: column; align-items: flex-end; }
 .mover-chg { color: var(--up-text); font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; }

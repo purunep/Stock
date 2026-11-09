@@ -8,6 +8,7 @@ React + Node app for live price charts of any stock, ETF, index or crypto, with 
 - **Trade levels on the chart.** The signal's entry, target and stop are drawn as labelled lines, with the reward zone shaded green and the risk zone shaded red.
 - **Volume tools.** Volume bars at 2× or more the normal volume for that time of day are shown in full colour. A volume profile on the right edge shows how much traded at each price, with the busiest price (POC) marked. An OBV (on-balance volume) panel sits under the chart, with a read of whether it confirms or diverges from price.
 - **Trend alignment.** A strip above the chart shows the trend on the 1-minute, 5-minute, daily and weekly timeframes, the S&P 500's direction, how the stock is doing against the market today, and which probability checks passed.
+- **News and catalysts.** Company news for the last 7 days from Finnhub, under the chart. Each headline is tagged by type (earnings, share offering, FDA, M&A, analyst rating, legal…) and tone. A one-line "why it's moving" summary sits under the price, each top gainer shows its catalyst or "No news", and the probability rating checks the news. Needs a free Finnhub API key (see below).
 - **Search.** Look up symbols by ticker or company name, for example `AAPL`, `tesla` or `BTC-USD`.
 - **Buy / Sell signal.** Seven daily technical indicators, five intraday indicators at the live price, and the Wall Street analyst consensus, combined into one live score from −100 to +100.
 - **Probability.** A back-test over two years of the stock's own history shows how often similar setups actually worked, rated High, Moderate or Low.
@@ -32,6 +33,8 @@ npm run install:all
 npm run dev
 ```
 
+**News (optional):** get a free API key at [finnhub.io](https://finnhub.io/register), copy `.env.example` to `.env` in the project root, and set `FINNHUB_API_KEY=` in it. `.env` is git-ignored, and the key is only used by the server, never sent to the browser. Without a key, everything else works and the news panel says news is off.
+
 Then open http://localhost:5173. `npm run dev` starts both processes:
 
 | Process | Port | What it does |
@@ -51,7 +54,8 @@ In production one Node service does everything: it serves the built React app, t
    ```
    Then create an empty repository on github.com and follow its "push an existing repository" instructions. The `.gitignore` already excludes `node_modules`, the build output and `.env` files.
 2. **Create the service.** In the [Render dashboard](https://dashboard.render.com), choose **New → Blueprint**, connect your GitHub account, and pick the repository. Render reads `render.yaml`, shows a free web service called `stock-live`, and you click **Apply**.
-3. **Wait for the first build** (a few minutes). Your app is then live at `https://stock-live-<suffix>.onrender.com`.
+3. **Add the news key (optional):** in the service's **Environment** tab, add `FINNHUB_API_KEY` with your key, and save. Render restarts the service with it. `render.yaml` declares the variable but never stores its value.
+4. **Wait for the first build** (a few minutes). Your app is then live at `https://stock-live-<suffix>.onrender.com`.
 
 To try the production setup locally first:
 
@@ -82,7 +86,8 @@ Then open http://localhost:8080.
 | `GET /api/chart/:symbol?range=1d` | Quote + OHLCV bars. Ranges: `1d 5d 1mo 6mo 1y 5y` |
 | `GET /api/analysis/:symbol` | Buy/sell recommendation with per-signal breakdown, intraday signals and probability |
 | `GET /api/movers` | Top 3 US gainers on high relative volume |
-| `GET /api/diagnostics` | Which upstream data sources this server can reach |
+| `GET /api/news/:symbol` | Last 7 days of company news, tagged, with a 24-hour catalyst summary |
+| `GET /api/diagnostics` | Which upstream data sources this server can reach, and whether news is enabled |
 | `WS /ws` | Send `{"type":"subscribe","symbol":"AAPL","range":"1d"}` to get a `snapshot`, then a `tick` on each poll |
 
 ## How the recommendation works
@@ -131,6 +136,23 @@ The trend read above the chart uses the usual interpretation:
 | **Mixed** | Price between the lines |
 
 The colours were checked for colour-blind separation and against the green/red candles. Each line also has its own dash style and axis label, so they can be told apart without colour.
+
+### News and catalysts
+
+`server/src/news.js` fetches the last 7 days of company news from Finnhub, cached per stock for 3 minutes. A local limiter keeps it under 45 calls a minute, below the free plan's 60. Each article is:
+
+- **Matched to the company:** it counts as being about the stock only if the ticker or company name is in the headline. Articles that just mention it in the summary are listed after the rest, marked "mentions this stock".
+- **Tagged from its headline** by keyword rules: Bankruptcy / delisting, Share offering, Reverse split, FDA / clinical, Earnings, Guidance, M&A, Analyst rating, Contract / partnership, Legal / regulatory.
+- **Given a tone** (positive, negative, neutral) from bullish and bearish words such as "soars", "beat", "plunges" or "miss". Offerings, reverse splits, bankruptcy and legal news always count as negative.
+
+The **catalyst** is the most common tag among the last 24 hours' headlines that name the company; a negative structural tag (offering, reverse split, bankruptcy) always wins. Its tone gives newer items more weight, halving every 6 hours. The panel adds a line of guidance for each catalyst type, for example "The company is selling new shares. That adds supply and often pulls the price back down."
+
+**Effect on the probability rating.** News can only lower the rating, never raise it, because headline wording is too noisy to trust a setup more:
+- a share offering, reverse split or bankruptcy against a Buy: at most **Low**
+- news whose tone points against the call: at most **Moderate**
+- a move of 8% or more today, or in extended hours, with no company news: at most **Moderate**, since unexplained moves reverse more often
+
+The tags and tone come from keyword rules, so they can be wrong. Read the article before acting on it.
 
 ### Trade levels, volume tools and trend alignment
 

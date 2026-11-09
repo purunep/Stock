@@ -5,8 +5,17 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
+// Load secrets from the repo-root .env in development (git-ignored). On Render/other hosts,
+// set them in the dashboard's environment settings instead; a missing file is fine.
+try {
+  process.loadEnvFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.env'));
+} catch {
+  /* no .env file */
+}
+
 import { getChart, getWarmup, search, getTopMovers, diagnose, isValidSymbol, RANGES } from './yahoo.js';
 import { analyse } from './analysis.js';
+import { getNews, getCatalyst, newsEnabled } from './news.js';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 // In production hosts (Render, Fly, Heroku…) assign the port via PORT. In dev we use API_PORT
@@ -32,7 +41,12 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 let diagCache = { at: 0, value: null };
 app.get('/api/diagnostics', async (_req, res) => {
   if (Date.now() - diagCache.at > 60_000) diagCache = { at: Date.now(), value: await diagnose() };
-  res.json({ node: process.version, env: process.env.NODE_ENV || 'development', checks: diagCache.value });
+  res.json({
+    node: process.version,
+    env: process.env.NODE_ENV || 'development',
+    news: newsEnabled() ? 'enabled (FINNHUB_API_KEY set)' : 'disabled (FINNHUB_API_KEY not set)',
+    checks: diagCache.value,
+  });
 });
 
 // Tiny per-IP rate limit for /api (no extra dependency). Cached upstream data makes most
@@ -82,7 +96,26 @@ app.get('/api/movers', async (req, res) => {
   // A forced 'pre' outside pre-market hours returns an empty list, since no trades fall in it.
   const force = ['pre', 'post', 'regular'].includes(req.query.session) ? req.query.session : null;
   try {
-    res.json(await getTopMovers(3, force));
+    const data = await getTopMovers(3, force);
+    // Tag each mover with its news catalyst ("Earnings", "Share offering", "No news"…).
+    // Cached per symbol for 3 min, so this is ~3 Finnhub calls per 3 min at most.
+    const movers = await Promise.all(
+      (data.movers || []).map(async (m) => ({ ...m, catalyst: await getCatalyst(m.symbol, m.name) })),
+    );
+    res.json({ ...data, movers });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+app.get('/api/news/:symbol', async (req, res) => {
+  const { symbol } = req.params;
+  if (!isValidSymbol(symbol)) return res.status(400).json({ error: 'Invalid symbol' });
+  try {
+    const sym = symbol.toUpperCase();
+    // Company name helps decide which articles are really about this company.
+    const name = await getChart(sym, '1d').then((d) => d.quote.name).catch(() => '');
+    res.json(await getNews(sym, name));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }

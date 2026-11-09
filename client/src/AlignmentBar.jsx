@@ -69,6 +69,7 @@ export default function AlignmentBar({ analysis }) {
             ['intraday', 'Live price'],
             ['timeframes', 'Timeframes'],
             ['market', 'Market'],
+            ['news', 'News'],
           ].map(([k, label]) =>
             p.checks[k] ? (
               <span key={k} className={`chk chk-${p.checks[k]}`}>
