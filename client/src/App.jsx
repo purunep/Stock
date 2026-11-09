@@ -4,6 +4,7 @@ import StockChart from './StockChart.jsx';
 import Recommendation from './Recommendation.jsx';
 import SignalBadge from './SignalBadge.jsx';
 import TopMovers from './TopMovers.jsx';
+import AlignmentBar from './AlignmentBar.jsx';
 import { useAnalysis } from './useAnalysis.js';
 import { useLiveFeed } from './useLiveFeed.js';
 import { fmtPrice, fmtChange, fmtPct, fmtVolume, fmtTime } from './format.js';
@@ -122,6 +123,8 @@ export default function App() {
           </div>
         </section>
 
+        {analysis.data?.symbol === symbol && <AlignmentBar analysis={analysis.data} />}
+
         <div className="controls">
           <div className="seg" role="group" aria-label="Range">
             {RANGES.map((r) => (
@@ -149,6 +152,7 @@ export default function App() {
           range={range}
           dark={dark}
           dimmed={loading}
+          plan={analysis.data?.symbol === symbol ? analysis.data.plan : null}
         />
 
         {quote && !loading && (

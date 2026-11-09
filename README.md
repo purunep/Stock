@@ -5,6 +5,9 @@ React + Node app for live price charts of any stock, ETF, index or crypto, with 
 - **Live chart.** Prices stream over a WebSocket: every 5 s on the 1D view, every 15 s on 5D, every 60 s on the longer ranges.
 - **Ranges and views.** Opens on 1D with 1-minute candlesticks, including pre/post-market. Other ranges: 5D, 1M, 6M, 1Y, 5Y. Candlestick or line chart, with volume and an OHLC readout under the crosshair.
 - **Chart overlays.** VWAP (solid blue), EMA 90 (dashed yellow) and EMA 150 (dotted pink) on the chart, each labelled on the price axis. A legend above the chart shows each value, whether price is above or below it, and a one-line trend read. Click a legend item to hide or show its line; the choice is remembered.
+- **Trade levels on the chart.** The signal's entry, target and stop are drawn as labelled lines, with the reward zone shaded green and the risk zone shaded red.
+- **Volume tools.** Volume bars at 2× or more the normal volume for that time of day are shown in full colour. A volume profile on the right edge shows how much traded at each price, with the busiest price (POC) marked. An OBV (on-balance volume) panel sits under the chart, with a read of whether it confirms or diverges from price.
+- **Trend alignment.** A strip above the chart shows the trend on the 1-minute, 5-minute, daily and weekly timeframes, the S&P 500's direction, how the stock is doing against the market today, and which probability checks passed.
 - **Search.** Look up symbols by ticker or company name, for example `AAPL`, `tesla` or `BTC-USD`.
 - **Buy / Sell signal.** Seven daily technical indicators, five intraday indicators at the live price, and the Wall Street analyst consensus, combined into one live score from −100 to +100.
 - **Probability.** A back-test over two years of the stock's own history shows how often similar setups actually worked, rated High, Moderate or Low.
@@ -117,6 +120,18 @@ The trend read above the chart uses the usual interpretation:
 
 The colours were checked for colour-blind separation and against the green/red candles. Each line also has its own dash style and axis label, so they can be told apart without colour.
 
+### Trade levels, volume tools and trend alignment
+
+Each of these can be switched on or off from the second legend row above the chart, and the choice is remembered.
+
+- **Trade levels** (`client/src/primitives.js`, `TradeZones`): the entry, target and stop from the Buy/Sell signal's plan, drawn as price lines with axis labels. The reward zone (entry to target) is shaded green and the risk zone (entry to stop) red, across the right 35% of the chart. The chart stretches its scale to include levels near the price, but not levels far away, so the candles don't get squashed.
+- **Volume spikes** (`overlays.js`, `volumeSpikes`): a bar counts as a spike when its volume is at least 2× normal. On intraday ranges, "normal" is the median volume for the same 15 minutes of the day over the previous 3 sessions, so the naturally busy open and close aren't all flagged. On daily ranges, it's the median of the previous 20 bars.
+- **Volume profile** (`primitives.js`, `buildProfile` / `VolumeProfile`): today's regular-session volume (or all visible bars on longer ranges) split into 32 price rows. Each bar's volume is spread evenly across the rows its high-low range covers. The darkest row is the **POC** (point of control, the price with the most volume). The middle shade is the **value area**, the rows holding 70% of the volume around the POC. Prices tend to react at the POC and at the value-area edges.
+- **OBV** (on-balance volume, `obvLine`): adds a bar's volume when it closes higher than the previous bar and subtracts it when it closes lower. Shown in its own panel under the chart. The legend compares OBV's direction with the price's over the last 20% of bars: if both move the same way, the move is confirmed; if OBV moves the other way, that's a divergence, an early sign the move is weakening.
+- **Trend alignment** (`server/src/alignment.js`): one rule on four timeframes, 1-minute (today), 5-minute (5 days), daily (2 years) and weekly (5 years). A timeframe is **up** when price > EMA 20 > EMA 50, **down** when price < EMA 20 < EMA 50, and **flat** otherwise. The **market** check applies the same rule to SPY (S&P 500) on 5-minute and daily bars: up when neither is down, down when both are, or when SPY trends down intraday, is below VWAP and is off more than 0.5% on the day. **vs market** is the stock's % change today minus SPY's.
+
+These feed into the probability rating. **High** now also needs at least 3 of 4 timeframes trending the call's way, and the S&P 500 not trending against it. If 3 or more timeframes point the other way, the rating drops to **Low**. The **Checks** list shows which conditions passed (✓), failed (✗) or were neutral (–). Hover over it for the full reasoning.
+
 ### Intraday signals (at the live price)
 
 `server/src/intraday.js` uses today's regular-session 1-minute bars:
@@ -138,7 +153,7 @@ The **live score** is 65% daily score (technical + analysts) and 35% intraday sc
 - how often price was higher (or lower, for a sell) **5 days later**, compared with an average day;
 - how often price moved **1.5 ATR in the signal's direction before 1.5 ATR against it**, within 10 days.
 
-The rating is **High** when the hit rate is at least 60%, at least 5 points better than an average day, *and* the intraday signals confirm the direction. It is **Moderate** at 53% or above with no negative edge. Otherwise it is **Low**, and in the Hold zone it is **No edge**. The rating is capped at Moderate when there are fewer than 25 comparable days or earnings are due within 7 days. It drops to Low when the intraday or daily view points the other way. Analyst ratings have no history, so they aren't part of the back-test.
+The rating is **High** when the hit rate is at least 60%, at least 5 points better than an average day, the intraday signals confirm the direction, at least 3 of 4 timeframes agree, and the S&P 500 isn't trending against the call. It is **Moderate** at 53% or above with no negative edge. Otherwise it is **Low**, and in the Hold zone it is **No edge**. The rating is capped at Moderate when there are fewer than 25 comparable days or earnings are due within 7 days. It drops to Low when the intraday or daily view points the other way. Analyst ratings have no history, so they aren't part of the back-test.
 
 ### Top movers
 

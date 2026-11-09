@@ -9,7 +9,20 @@ import {
   CrosshairMode,
 } from 'lightweight-charts';
 import { fmtPrice, fmtVolume, fmtTime } from './format.js';
-import { emaLine, vwapLine, OVERLAYS } from './overlays.js';
+import { emaLine, vwapLine, obvLine, volumeSpikes, OVERLAYS } from './overlays.js';
+import { TradeZones, VolumeProfile, buildProfile } from './primitives.js';
+
+// Optional chart layers (toggled from the legend, remembered across visits).
+const LAYER_PREF_KEY = 'layers.v1';
+const LAYER_DEFAULTS = { levels: true, profile: true, obv: true };
+const loadLayers = () => {
+  try {
+    return { ...LAYER_DEFAULTS, ...JSON.parse(localStorage.getItem(LAYER_PREF_KEY) || '{}') };
+  } catch {
+    return { ...LAYER_DEFAULTS };
+  }
+};
+const SPIKE_X = 2; // a bar is a "volume spike" at >= 2x the normal volume for that time
 
 // Each overlay has its own colour AND dash style, so they can be told apart without colour.
 const OVERLAY_STYLE = {
@@ -58,6 +71,9 @@ function seriesColors() {
     down: cssVar('--down'),
     volUp: cssVar('--vol-up'),
     volDown: cssVar('--vol-down'),
+    // Spikes: same hue as the candle, at full strength, so heavy-volume bars stand out.
+    spikeUp: cssVar('--up'),
+    spikeDown: cssVar('--down'),
   };
 }
 
@@ -65,7 +81,7 @@ function seriesColors() {
 // axis reads in the exchange's local time (e.g. 09:30 for a NYSE open).
 const toChartBars = (bars, offset) => bars.map((b) => ({ ...b, time: b.time + offset }));
 
-export default function StockChart({ bars, warmup = [], resetSeq, quote, chartType, range, dark, dimmed }) {
+export default function StockChart({ bars, warmup = [], resetSeq, quote, chartType, range, dark, dimmed, plan }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const priceRef = useRef(null);
@@ -75,6 +91,17 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
   const [hover, setHover] = useState(null);
   const overlayRefs = useRef({}); // key -> line series
   const [show, setShow] = useState(loadPrefs);
+  const [layers, setLayers] = useState(loadLayers);
+  const zonesRef = useRef(null);
+  const profileRef = useRef(null);
+  const planLinesRef = useRef([]);
+  const obvRef = useRef(null);
+  const toggleLayer = (key) =>
+    setLayers((s) => {
+      const next = { ...s, [key]: !s[key] };
+      localStorage.setItem(LAYER_PREF_KEY, JSON.stringify(next));
+      return next;
+    });
 
   const offset = quote?.gmtOffset ?? 0;
   const intraday = range === '1d' || range === '5d' || range === '1mo';
@@ -103,8 +130,27 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
       const sessionStart = range === '1d' && quote?.session ? quote.session.start + offset : null;
       out.vwap = vwapLine(toChartBars(bars, offset), { sessionStart });
     }
+    // On-balance volume: running total of volume, + on up bars and - on down bars.
+    out.obv = obvLine(toChartBars(bars, offset));
     return out;
   }, [bars, warmup, offset, intraday, range, quote?.session?.start]);
+
+  // Volume spikes: bars trading >= SPIKE_X times normal. Intraday, "normal" is the average for
+  // the same minute-of-day in earlier sessions (warmup), so the opening rush isn't flagged.
+  const spikes = useMemo(
+    () => volumeSpikes(bars, warmup, { intraday, offset, threshold: SPIKE_X }),
+    [bars, warmup, intraday, offset],
+  );
+  const spikesRef = useRef(spikes);
+  spikesRef.current = spikes;
+
+  // Volume profile over today's regular session (1D) or the visible bars (other ranges).
+  const profile = useMemo(() => {
+    if (!bars.length) return null;
+    const s = range === '1d' && quote?.session ? quote.session : null;
+    const src = s ? bars.filter((b) => b.time >= s.start && b.time < s.end) : bars;
+    return buildProfile(src.length >= 10 ? src : bars);
+  }, [bars, range, quote?.session?.start]);
   // Create chart once.
   useEffect(() => {
     const chart = createChart(containerRef.current, {
@@ -122,6 +168,17 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
     });
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     volRef.current = vol;
+
+    // OBV lives in its own pane under the price chart (pane index 1).
+    const obv = chart.addSeries(
+      LineSeries,
+      { lineWidth: 2, priceLineVisible: false, lastValueVisible: true, title: 'OBV', priceFormat: { type: 'volume' } },
+      1,
+    );
+    obvRef.current = obv;
+    const pane = chart.panes()[1];
+    pane?.setStretchFactor(0.22);
+    chart.panes()[0]?.setStretchFactor(1);
 
     return () => {
       chart.remove();
@@ -158,13 +215,27 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
     priceRef.current.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.22 } });
     seededRef.current.seq = -1;
     const series = priceRef.current;
+
+    // Custom drawings ride on the price series.
+    const zones = new TradeZones();
+    const prof = new VolumeProfile();
+    series.attachPrimitive(prof);
+    series.attachPrimitive(zones);
+    zonesRef.current = zones;
+    profileRef.current = prof;
+
     return () => {
       // The chart may already be removed (unmount / StrictMode remount) — that's fine.
       try {
+        series.detachPrimitive(zones);
+        series.detachPrimitive(prof);
         chart.removeSeries(series);
       } catch {}
       priceRef.current = null;
       prevCloseLineRef.current = null;
+      planLinesRef.current = [];
+      zonesRef.current = null;
+      profileRef.current = null;
     };
   }, [chartType, dark]);
 
@@ -177,7 +248,11 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
     const c = seriesColors();
     const shifted = toChartBars(bars, offset);
     const toPrice = (b) => (chartType === 'candle' ? b : { time: b.time, value: b.close });
-    const toVol = (b) => ({ time: b.time, value: b.volume, color: b.close >= b.open ? c.volUp : c.volDown });
+    const toVol = (b) => {
+      const up = b.close >= b.open;
+      const spike = spikesRef.current.has(b.time - offset);
+      return { time: b.time, value: b.volume, color: spike ? (up ? c.spikeUp : c.spikeDown) : up ? c.volUp : c.volDown };
+    };
 
     const seeded = seededRef.current;
     const lastTime = shifted[shifted.length - 1].time;
@@ -201,6 +276,69 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
       seeded.lastTime = lastTime;
     }
   }, [bars, resetSeq, chartType, offset, dark, dimmed]);
+
+  // Re-colour volume when the spike set changes (e.g. warmup arrives after the snapshot).
+  useEffect(() => {
+    const vol = volRef.current;
+    if (!vol || !bars.length || dimmed) return;
+    const c = seriesColors();
+    vol.setData(
+      toChartBars(bars, offset).map((b) => {
+        const up = b.close >= b.open;
+        const spike = spikes.has(b.time - offset);
+        return { time: b.time, value: b.volume, color: spike ? (up ? c.spikeUp : c.spikeDown) : up ? c.volUp : c.volDown };
+      }),
+    );
+    // Only when the spike set itself changes; per-tick updates are handled above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spikes, dark, chartType]);
+
+  // OBV pane.
+  useEffect(() => {
+    const s = obvRef.current;
+    if (!s || dimmed) return;
+    s.applyOptions({ visible: layers.obv, color: cssVar('--text-secondary') });
+    s.setData(layers.obv ? lines.obv || [] : []);
+    const pane = chartRef.current?.panes()[1];
+    pane?.setStretchFactor(layers.obv ? 0.22 : 0.0001);
+  }, [lines, layers.obv, dimmed, dark]);
+
+  // Entry / target / stop: price lines with axis labels + shaded reward/risk zones.
+  useEffect(() => {
+    const price = priceRef.current;
+    if (!price) return;
+    for (const l of planLinesRef.current) {
+      try {
+        price.removePriceLine(l);
+      } catch {}
+    }
+    planLinesRef.current = [];
+    const on = layers.levels && plan && plan.entry && plan.target && plan.stop;
+    const dataRange = bars.length
+      ? { lo: Math.min(...bars.map((b) => b.low)), hi: Math.max(...bars.map((b) => b.high)) }
+      : null;
+    zonesRef.current?.setPlan(on ? plan : null, { reward: cssVar('--zone-reward'), risk: cssVar('--zone-risk') }, dataRange);
+    if (!on) return;
+    const short = plan.bias === 'short';
+    const mk = (p, title, color, style) =>
+      price.createPriceLine({ price: p, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title });
+    planLinesRef.current = [
+      mk(plan.entry, plan.bias === 'neutral' ? 'Buy below' : short ? 'Sell near' : 'Entry', cssVar('--text-primary'), LineStyle.Solid),
+      mk(plan.target, 'Target', cssVar(short ? '--down' : '--up'), LineStyle.Dashed),
+      mk(plan.stop, 'Stop', cssVar(short ? '--up' : '--down'), LineStyle.Dashed),
+    ];
+    // Range only needs refreshing when the visible data changes meaningfully (new snapshot).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan?.entry, plan?.target, plan?.stop, plan?.bias, layers.levels, chartType, dark, resetSeq, bars.length > 0]);
+
+  // Volume profile drawing.
+  useEffect(() => {
+    profileRef.current?.setProfile(layers.profile ? profile : null, {
+      bar: cssVar('--vp-bar'),
+      va: cssVar('--vp-va'),
+      poc: cssVar('--vp-poc'),
+    });
+  }, [profile, layers.profile, chartType, dark]);
 
   // Create one line series per overlay (re-created on theme change for fresh colours).
   useEffect(() => {
@@ -318,6 +456,26 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
   });
   const bias = trendRead(legend.filter((l) => show[l.key]), readout?.close);
 
+  // Layer readouts.
+  const isSpike = readout ? spikes.has(readout.time) : false;
+  const spikeCount = spikes.size;
+  const obvTrend = (() => {
+    const o = lines.obv;
+    if (!o || o.length < 30) return null;
+    // Compare OBV slope with price slope over the last ~20% of bars (min 20).
+    const n = Math.max(20, Math.floor(o.length * 0.2));
+    const dObv = o.at(-1).value - o.at(-n).value;
+    const p1 = bars.at(-n)?.close, p2 = bars.at(-1)?.close;
+    if (p1 == null || p2 == null) return null;
+    const dPx = p2 - p1;
+    const up = dObv > 0, pxUp = dPx > 0;
+    if (up && pxUp) return { kind: 'up', text: 'OBV rising with price: buyers confirm' };
+    if (!up && !pxUp) return { kind: 'down', text: 'OBV falling with price: sellers confirm' };
+    if (up && !pxUp) return { kind: 'up', text: 'Bullish divergence: OBV rising while price falls' };
+    return { kind: 'down', text: 'Bearish divergence: OBV falling while price rises' };
+  })();
+  const pocDiff = profile && readout ? ((readout.close - profile.poc) / profile.poc) * 100 : null;
+
   return (
     <div className={`chart-wrap${dimmed ? ' is-dimmed' : ''}`}>
       {readout && (
@@ -364,6 +522,58 @@ export default function StockChart({ bars, warmup = [], resetSeq, quote, chartTy
             {bias.label}
           </span>
         )}
+      </div>
+
+      <div className="ov-legend layer-row" role="group" aria-label="Chart layers">
+        <button
+          className={`ov-item${layers.levels ? '' : ' is-off'}`}
+          onClick={() => toggleLayer('levels')}
+          aria-pressed={layers.levels}
+          title="Entry, target and stop from the Buy/Sell signal, with reward (green) and risk (red) zones"
+        >
+          <span className="layer-swatch zone" aria-hidden="true" />
+          <span className="ov-label">Trade levels</span>
+          {plan?.riskReward != null && layers.levels && <span className="ov-pos">R:R 1:{plan.riskReward}</span>}
+        </button>
+        <button
+          className={`ov-item${layers.profile ? '' : ' is-off'}`}
+          onClick={() => toggleLayer('profile')}
+          aria-pressed={layers.profile}
+          title="Volume traded at each price. POC = the price with the most volume; it often acts as support or resistance."
+        >
+          <span className="layer-swatch vp" aria-hidden="true" />
+          <span className="ov-label">Volume profile</span>
+          {profile && layers.profile && (
+            <>
+              <span>POC</span>
+              <strong className="ov-val">{fmtPrice(profile.poc)}</strong>
+              {pocDiff != null && (
+                <span className={`ov-pos ${pocDiff >= 0 ? 'stance-bullish' : 'stance-bearish'}`}>
+                  {pocDiff >= 0 ? '▲ above' : '▼ below'} {Math.abs(pocDiff).toFixed(2)}%
+                </span>
+              )}
+            </>
+          )}
+        </button>
+        <button
+          className={`ov-item${layers.obv ? '' : ' is-off'}`}
+          onClick={() => toggleLayer('obv')}
+          aria-pressed={layers.obv}
+          title="On-balance volume: adds volume on up bars and subtracts it on down bars. If it disagrees with price, the move is weakening."
+        >
+          <span className="layer-swatch obv" aria-hidden="true" />
+          <span className="ov-label">OBV</span>
+          {obvTrend && layers.obv && (
+            <span className={`ov-pos ${obvTrend.kind === 'up' ? 'stance-bullish' : 'stance-bearish'}`}>{obvTrend.text}</span>
+          )}
+        </button>
+        <span
+          className={`spike-read${isSpike ? ' is-spike' : ''}`}
+          title={`Bright volume bars traded at least ${SPIKE_X}× the normal volume for that time of day.`}
+        >
+          <span className="layer-swatch spike" aria-hidden="true" />
+          {isSpike ? `This bar: volume spike (≥${SPIKE_X}× normal)` : `${spikeCount} volume spike${spikeCount === 1 ? '' : 's'} (≥${SPIKE_X}× normal)`}
+        </span>
       </div>
 
       <div ref={containerRef} className="chart" />

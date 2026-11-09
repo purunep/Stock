@@ -29,7 +29,10 @@ const WARMUP = {
   '1y': { range: '2y', interval: '1d', prePost: false },
   '5y': { range: '10y', interval: '1wk', prePost: false },
 };
-const WARMUP_BARS = 450; // ~3x the longest EMA period, so the seed has washed out
+// ~3x the longest EMA period so the seed has washed out. For 1-minute bars we send ~3 full
+// sessions instead, because the volume-spike baseline needs earlier days at the same time of day.
+const WARMUP_BARS = 450;
+const WARMUP_BARS_1M = 3 * 390;
 
 const SYMBOL_RE = /^[A-Za-z0-9.\-^=]{1,20}$/;
 export const isValidSymbol = (s) => typeof s === 'string' && SYMBOL_RE.test(s);
@@ -157,7 +160,11 @@ export async function getWarmup(symbol, rangeKey, firstTime) {
     const data = await cached(`warmup:${symbol}:${rangeKey}`, 10 * 60_000, async () =>
       normalise(await getJson(chartUrl(symbol, p)), { intraday: /m$/.test(p.interval) }),
     );
-    return data.bars.filter((b) => b.time < firstTime).slice(-WARMUP_BARS);
+    const keep = p.interval === '1m' ? WARMUP_BARS_1M : WARMUP_BARS;
+    // 1m: regular-session bars only (pre/post volume would distort the time-of-day baseline).
+    const rows = data.bars.filter((b) => b.time < firstTime);
+    const regular = p.interval === '1m' ? rows.filter((b) => b.volume > 0) : rows;
+    return regular.slice(-keep);
   } catch {
     return [];
   }

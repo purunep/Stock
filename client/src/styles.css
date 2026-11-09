@@ -21,6 +21,13 @@
   --ov-vwap: #2a78d6;
   --ov-ema90: #eda100;
   --ov-ema150: #e87ba4;
+  /* Trade zones + volume profile (drawn on the chart canvas) */
+  --zone-reward: rgba(12, 163, 12, 0.10);
+  --zone-risk: rgba(208, 59, 59, 0.10);
+  /* Neutral greys so the profile never reads as a series (VWAP is blue) */
+  --vp-bar: rgba(82, 81, 78, 0.12);
+  --vp-va: rgba(82, 81, 78, 0.26);
+  --vp-poc: rgba(11, 11, 11, 0.62);
 }
 :root[data-theme='dark'] {
   color-scheme: dark;
@@ -43,6 +50,11 @@
   --ov-vwap: #3987e5;
   --ov-ema90: #c98500;
   --ov-ema150: #d55181;
+  --zone-reward: rgba(12, 163, 12, 0.14);
+  --zone-risk: rgba(230, 103, 103, 0.14);
+  --vp-bar: rgba(195, 194, 183, 0.12);
+  --vp-va: rgba(195, 194, 183, 0.26);
+  --vp-poc: rgba(240, 239, 236, 0.62);
 }
 
 * { box-sizing: border-box; }
@@ -133,7 +145,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* Chart */
 .chart-wrap { position: relative; transition: opacity 0.2s; }
 .chart-wrap.is-dimmed { opacity: 0.45; }
-.chart { height: 460px; width: 100%; }
+.chart { height: 560px; width: 100%; }
 .readout {
   display: flex; flex-wrap: wrap; gap: 4px 14px; min-height: 22px; margin-bottom: 4px;
   font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums;
@@ -166,6 +178,48 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .ov-bias-down { color: var(--down-text); border-color: var(--d-sell); background: color-mix(in srgb, var(--d-sell) 10%, transparent); }
 .ov-bias-mixed { color: var(--text-secondary); border-color: var(--axis); background: var(--wash); }
 @media (max-width: 720px) { .ov-bias { margin-left: 0; } }
+
+/* Trend alignment strip */
+.align {
+  display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; margin: -4px 0 14px; padding: 10px 12px;
+  border-radius: 10px; background: var(--wash); font-size: 12px;
+}
+.align-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.align-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-right: 2px; }
+.tf {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; cursor: help;
+  background: var(--surface-1); border: 1px solid var(--border); font-variant-numeric: tabular-nums;
+}
+.tf-label { color: var(--text-secondary); }
+.tf-word { font-weight: 600; }
+.tf span[aria-hidden] { font-size: 10px; }
+.tf-up { color: var(--up-text); }
+.tf-down { color: var(--down-text); }
+.tf-flat, .tf-mixed, .tf-unknown { color: var(--text-secondary); }
+.tf-agree { border-color: currentColor; }
+.align-sum { font-weight: 700; padding: 0 4px; }
+.align-up { color: var(--up-text); }
+.align-down { color: var(--down-text); }
+.align-mixed { color: var(--text-secondary); }
+.align-checks { margin-left: auto; cursor: help; }
+.chk { display: inline-flex; gap: 3px; font-weight: 600; }
+.chk-pass { color: var(--up-text); }
+.chk-fail { color: var(--down-text); }
+.chk-neutral { color: var(--text-muted); }
+@media (max-width: 720px) { .align-checks { margin-left: 0; } }
+
+/* Layer toggles row */
+.layer-row { margin-top: -2px; }
+.layer-swatch { display: inline-block; width: 14px; height: 10px; border-radius: 2px; flex: none; }
+.layer-swatch.zone { background: linear-gradient(var(--zone-reward) 50%, var(--zone-risk) 50%); border: 1px solid var(--axis); }
+.layer-swatch.vp {
+  background: linear-gradient(transparent 0 20%, var(--vp-va) 20% 45%, var(--vp-poc) 45% 60%, var(--vp-va) 60% 85%, transparent 85%);
+  border: 1px solid var(--axis);
+}
+.layer-swatch.obv { height: 2px; background: var(--text-secondary); border-radius: 1px; }
+.layer-swatch.spike { width: 6px; height: 12px; background: var(--up); border-radius: 1px; }
+.spike-read { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); padding: 4px 4px; }
+.spike-read.is-spike { color: var(--text-primary); font-weight: 600; }
 
 /* Stats */
 .stats {

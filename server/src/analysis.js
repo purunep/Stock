@@ -9,6 +9,7 @@ import { getChart, getAnalyst } from './yahoo.js';
 import { clamp, pct, f2, signal, aggregate } from './scoring.js';
 import { intradaySignals } from './intraday.js';
 import { buildSamples, hitRate } from './backtest.js';
+import { alignmentFor } from './alignment.js';
 
 /** Index of the most recent sign change of (a - b) within the last `lookback` bars, or -1. */
 function lastCross(a, b, lookback) {
@@ -283,7 +284,7 @@ function agreementOf(signals, score) {
  * Probability label combining the historical hit rate with how well the
  * daily and intraday views agree. Never claims "high" without both.
  */
-function probabilityOf(hist, liveScore, dailyScore, intraday, earningsSoon) {
+function probabilityOf(hist, liveScore, dailyScore, intraday, earningsSoon, align) {
   const dir = liveScore >= 15 ? 1 : liveScore <= -15 ? -1 : 0;
   if (!hist) return { level: 'Unknown', direction: dir, reason: 'Not enough price history to measure a hit rate.' };
 
@@ -313,9 +314,20 @@ function probabilityOf(hist, liveScore, dailyScore, intraday, earningsSoon) {
     const order = ['Low', 'Moderate', 'High'];
     if (order.indexOf(level) > order.indexOf(to)) level = to;
   };
+  // Timeframe + market agreement with the call's direction.
+  const want2 = dir === 1 ? 'up' : 'down';
+  const tfWith = align ? (dir === 1 ? align.up : align.down) : null;
+  const tfAgainst = align ? (dir === 1 ? align.down : align.up) : null;
+  const tfAligned = align && dir !== 0 && align.consensus === want2;
+  const tfConflict = align && dir !== 0 && tfAgainst >= 3;
+  const mkt = align?.market?.stance;
+  const marketAgainst = dir !== 0 && mkt && mkt !== 'mixed' && mkt !== want2;
+
   if (dir !== 0) {
     if (!intradayAgrees) cap('Moderate'); // "High" needs the live price to confirm
-    if (intradayDisagrees || dailyDisagrees) cap('Low');
+    if (align && !tfAligned) cap('Moderate'); // ...and at least 3 of 4 timeframes
+    if (marketAgainst) cap('Moderate'); // ...and not fighting the overall market
+    if (intradayDisagrees || dailyDisagrees || tfConflict) cap('Low');
     if (earningsSoon || hist.cases < 25) cap('Moderate');
   }
 
@@ -327,18 +339,41 @@ function probabilityOf(hist, liveScore, dailyScore, intraday, earningsSoon) {
   if (intradayAgrees) reasons.push('Intraday signals at the live price confirm the direction.');
   if (intradayDisagrees) reasons.push('Intraday signals at the live price point the other way.');
   if (dailyDisagrees) reasons.push('The daily trend points the other way.');
+  if (align && dir !== 0) {
+    if (tfAligned) reasons.push(`${tfWith} of ${align.total} timeframes trend ${want2}.`);
+    else if (tfConflict) reasons.push(`${tfAgainst} of ${align.total} timeframes trend the other way.`);
+    else reasons.push(`Only ${tfWith} of ${align.total} timeframes trend ${want2}, so the bigger picture is mixed.`);
+  }
+  if (marketAgainst) reasons.push(`The S&P 500 is trending ${mkt}, against this call.`);
+  else if (dir !== 0 && mkt === want2) reasons.push(`The S&P 500 is also trending ${mkt}.`);
   if (earningsSoon) reasons.push('Earnings are due within a week and can override technicals.');
   if (hist.cases < 25) reasons.push('Few comparable days, so the estimate is rough.');
 
-  return { level, direction: dir, winRate, baseRate, edge, barrier, reason: reasons.join(' ') };
+  return {
+    level,
+    direction: dir,
+    winRate,
+    baseRate,
+    edge,
+    barrier,
+    checks: {
+      intraday: dir === 0 ? null : intradayAgrees ? 'pass' : intradayDisagrees ? 'fail' : 'neutral',
+      timeframes: !align || dir === 0 ? null : tfAligned ? 'pass' : tfConflict ? 'fail' : 'neutral',
+      market: !align?.market || dir === 0 ? null : marketAgainst ? 'fail' : mkt === want2 ? 'pass' : 'neutral',
+      history: dir === 0 ? null : winRate >= 60 && edge >= 5 ? 'pass' : winRate >= 53 && edge >= 0 ? 'neutral' : 'fail',
+    },
+    reason: reasons.join(' '),
+  };
 }
 
 export async function analyse(symbol) {
-  const [daily, analyst, intraday] = await Promise.all([
+  const [daily, analyst, intraday, d1] = await Promise.all([
     getChart(symbol, '2y', { ttlMs: 60_000 }),
     getAnalyst(symbol),
     intradaySignals(symbol).catch((e) => ({ available: false, reason: e.message })),
+    getChart(symbol, '1d').catch(() => null),
   ]);
+  const align = await alignmentFor(symbol, d1?.quote, d1?.bars).catch(() => null);
   const bars = daily.bars;
   if (bars.length < 30) {
     const err = new Error('Not enough price history to analyse this symbol');
@@ -392,7 +427,8 @@ export async function analyse(symbol) {
       verdictKey: liveVerdict.key,
       intraday,
     },
-    probability: { ...probabilityOf(history, liveScore, score, intraday, earningsSoon), history },
+    probability: { ...probabilityOf(history, liveScore, score, intraday, earningsSoon, align), history },
+    alignment: align,
     earnings: analyst?.nextEarnings ? { date: analyst.nextEarnings, daysAway: daysToEarnings, soon: earningsSoon } : null,
     priceAsOf: daily.quote.marketTime,
     analyst,
