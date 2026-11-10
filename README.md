@@ -155,12 +155,19 @@ The **catalyst** is the most common tag among the last 24 hours' headlines that 
 
 The tags and tone come from keyword rules, so they can be wrong. Read the article before acting on it.
 
-**Latest stock news (right rail, under the top gainers).** The 3 newest headlines from the last 24 hours that name a stock, each with a clickable symbol chip. Finnhub's free market-wide feeds don't say which stock a story is about, so the feed (`/api/news-feed`) is built from company news for:
+**Latest stock news (right rail, under the top gainers).** The 3 newest headlines from the last 24 hours that name a stock, each with a clickable symbol chip. It covers:
 - the stock you're viewing and the watchlist
 - the current top gainers (marked "Top gainer")
 - the biggest US companies (AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, AVGO, AMD, NFLX, JPM, SPY)
 
-Only headlines that name the company are kept, so the symbol chip is accurate, and the same story under several symbols is merged into one item. The page checks every 45 seconds and marks headlines that arrived since the last check as **New** for a minute. To stay inside Finnhub's free 60 calls a minute, each check re-fetches at most 6 symbols, oldest first, and only while the server has made fewer than 30 calls in the last minute. Each symbol's news is re-checked at most every 2 minutes, so a brand-new story can take up to about 2–3 minutes to appear.
+**Sources and speed.** Finnhub's free company-news feed lags by an hour or two (its newest items were about 2 hours old when tested), so the feed's main source is Yahoo Finance, which needs no key. While someone has the page open, a server loop runs **every 5 seconds**:
+- Yahoo's RSS headline feed for all tracked symbols, in one or two calls
+- Yahoo's news search for the next 2 symbols in rotation
+- Finnhub company news for the stalest symbols, when the per-minute budget allows (only if `FINNHUB_API_KEY` is set)
+
+Results are merged into one pool. The page polls every 5 seconds and just reads the pool, and headlines that arrived since the last check are marked **New** for a minute. New stories typically show within seconds of Yahoo publishing them; tested, the newest headline was 5–15 minutes old, against about 2 hours with Finnhub alone. The loop stops a minute after nobody is watching, and the page pauses polling while its tab is hidden.
+
+**Which stock a headline is about.** A headline is tagged with a symbol only if it names the company: the ticker, or the company name as a whole word (so "Intel" doesn't match "Intelligence"). Yahoo's own "related tickers" lists are too broad to use; a press release for a China tech fair lists NVDA, TSLA, AMZN and more. The same story under several symbols is merged into one item with all their chips.
 
 ### Trade levels, volume tools and trend alignment
 

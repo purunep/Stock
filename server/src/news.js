@@ -84,7 +84,19 @@ function identifiers(symbol, name) {
     .trim();
   const words = clean.split(' ').filter(Boolean);
   const phrase = words.slice(0, words[0]?.length <= 3 ? 2 : 1).join(' ').toLowerCase();
-  return { tickerRe: new RegExp(`(^|[^A-Za-z])${symbol.replace('.', '\\.')}([^A-Za-z]|$)`), phrase };
+  // Whole-word match on the name, allowing a possessive ("Intel's"), so "Intel" doesn't
+  // match "Intelligence" and "Meta" doesn't match "Metals".
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const phraseRe = phrase.length >= 3 ? new RegExp(`(^|[^a-z0-9])${esc(phrase)}(['’]s)?([^a-z0-9]|$)`, 'i') : null;
+  return {
+    tickerRe: new RegExp(`(^|[^A-Za-z])${symbol.replace('.', '\\.')}([^A-Za-z]|$)`),
+    phrase,
+    // headline/summary "names this company"
+    names: (text) => {
+      const t = String(text || '');
+      return new RegExp(`(^|[^A-Za-z])${symbol.replace('.', '\\.')}([^A-Za-z]|$)`).test(t) || (phraseRe ? phraseRe.test(t) : false);
+    },
+  };
 }
 
 const safeUrl = (u) => (/^https?:\/\//i.test(String(u || '')) ? u : null);
@@ -103,7 +115,7 @@ export async function getNews(symbol, name) {
   if (!newsEnabled()) return { available: false, reason: 'News is off: set FINNHUB_API_KEY on the server.' };
   if (!/^[A-Z.]{1,6}$/.test(symbol)) return { available: false, reason: 'News covers US-listed stocks only.' };
   const raw = await finnhub(companyNewsPath(symbol), 3 * 60_000);
-  const { tickerRe, phrase } = identifiers(symbol, name);
+  const { names } = identifiers(symbol, name);
 
   const seen = new Set();
   const items = [];
@@ -116,8 +128,8 @@ export async function getNews(symbol, name) {
     const summary = String(a.summary || '').trim();
     // "About this company" = named in the headline. A name in the summary only is usually a
     // market roundup that mentions it in passing (and its tags describe other companies).
-    const inHeadline = tickerRe.test(headline) || (phrase.length >= 3 && headline.toLowerCase().includes(phrase));
-    const relevant = inHeadline || tickerRe.test(summary) || (phrase.length >= 3 && summary.toLowerCase().includes(phrase));
+    const inHeadline = names(headline);
+    const relevant = inHeadline || names(summary);
     // Tag from the headline; the summary only adds tone. Roundup summaries list other
     // companies' earnings, offerings etc., which would mis-tag this one.
     const { tags } = classify(headline);
@@ -184,64 +196,207 @@ const FEED_TTL_MS = 2 * 60_000; // re-check a symbol's news at most every 2 min
 const FEED_REFRESH_PER_CALL = 6;
 const FEED_BUDGET = 30; // of the 45/min local cap
 
+// ---- Yahoo news (no key, minutes fresher than Finnhub's company-news) ------------------
+// Two Yahoo sources, both free:
+//   - RSS headline feed: one call covers many symbols (newest first), but items don't say
+//     which symbol they belong to -> matched to a symbol by name in the headline.
+//   - search endpoint: per symbol, each item lists its related tickers.
+// Both are CDN-cacheable for ~10 min, so every request carries a cache-buster.
+const YH = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36' };
+const decode = (s) =>
+  String(s || '')
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&nbsp;|&amp;nbsp;/g, ' ')
+    .trim();
+
+async function yahooRss(symbols) {
+  const out = [];
+  // The RSS endpoint takes a comma list; keep batches modest so each stays complete.
+  for (let i = 0; i < symbols.length; i += 10) {
+    const batch = symbols.slice(i, i + 10);
+    try {
+      const r = await fetch(
+        `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${batch.map(encodeURIComponent).join(',')}&region=US&lang=en-US&_=${Date.now()}`,
+        { headers: { ...YH, 'Cache-Control': 'no-cache' }, signal: AbortSignal.timeout(8000) },
+      );
+      if (!r.ok) continue;
+      const xml = await r.text();
+      for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+        const f = (tag) => decode((m[1].match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`)) || [])[1]);
+        const time = Math.floor(Date.parse(f('pubDate')) / 1000);
+        if (!f('title') || !time) continue;
+        out.push({ id: f('guid') || f('link'), headline: f('title'), summary: f('description'), url: f('link'), time, source: 'Yahoo Finance', related: null });
+      }
+    } catch {
+      /* next batch */
+    }
+  }
+  return out;
+}
+
+async function yahooSearchNews(symbol) {
+  try {
+    const r = await fetch(
+      `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&quotesCount=0&newsCount=10&_=${Date.now()}`,
+      { headers: { ...YH, 'Cache-Control': 'no-cache' }, signal: AbortSignal.timeout(8000) },
+    );
+    if (!r.ok) return [];
+    return ((await r.json())?.news || []).map((x) => ({
+      id: x.uuid,
+      headline: decode(x.title),
+      summary: '',
+      url: x.link,
+      time: x.providerPublishTime,
+      source: x.publisher || 'Yahoo Finance',
+      related: (x.relatedTickers || []).map((t) => String(t).toUpperCase()),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// ---- live feed poller ---------------------------------------------------------------
+// While anyone is looking, a background loop keeps a merged pool of articles fresh:
+//   every POLL_MS:          Yahoo RSS for all tracked symbols (1-2 calls)
+//   every POLL_MS, rotating: Yahoo search for the next 2 symbols
+//   when the budget allows: Finnhub company-news for the stalest symbols (2-min TTL)
+// Requests just read the pool, so polling the endpoint every few seconds costs nothing.
+const POLL_MS = 5_000;
+const IDLE_MS = 60_000;
+const feed = { entries: [], pool: new Map(), timer: null, lastAsked: 0, rot: 0, busy: false, lastPoll: 0 };
+
+const norm = (h) => h.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90);
+
+/** Add articles to the pool, tagging each with the tracked symbols it is about. */
+function ingest(articles, entries, sourceSymbol = null) {
+  const now = Date.now() / 1000;
+  const ids = entries.map((e) => ({ e, ...identifiers(e.symbol, e.name) }));
+  for (const a of articles) {
+    const headline = String(a.headline || '').trim();
+    if (!headline || !a.time || now - a.time > 86400 || a.time > now + 300) continue;
+    // Symbols this headline is about: named in the headline. (Yahoo's relatedTickers are too
+    // broad - a China tech-fair release lists NVDA, TSLA, AMZN… - so they only help when the
+    // headline also names the company.)
+    const syms = ids
+      .filter(({ names }) => names(headline))
+      .map(({ e }) => e.symbol);
+    if (!syms.length) continue;
+    const k = norm(headline);
+    const cur = feed.pool.get(k);
+    if (cur) {
+      for (const s of syms) if (!cur.symbols.includes(s)) cur.symbols.push(s);
+      cur.time = Math.min(cur.time, a.time); // earliest report time
+      continue;
+    }
+    const { tags } = classify(headline);
+    const { tone } = classify(`${headline}. ${a.summary || ''}`);
+    feed.pool.set(k, {
+      id: String(a.id || k),
+      time: a.time,
+      firstSeen: Date.now(),
+      headline,
+      source: a.source || '',
+      url: safeUrl(a.url),
+      symbols: syms,
+      tags,
+      tone,
+    });
+  }
+  // Drop anything older than 24 h.
+  for (const [k, v] of feed.pool) if (now - v.time > 86400) feed.pool.delete(k);
+}
+
+async function pollOnce() {
+  if (feed.busy || !feed.entries.length) return;
+  feed.busy = true;
+  try {
+    const entries = feed.entries;
+    const symbols = entries.map((e) => e.symbol);
+    // 1) Yahoo RSS, all symbols.
+    const rss = yahooRss(symbols);
+    // 2) Yahoo search, rotating 2 symbols per tick (movers first).
+    const pick = [];
+    for (let i = 0; i < 2 && i < entries.length; i++) pick.push(entries[(feed.rot + i) % entries.length]);
+    feed.rot = (feed.rot + 2) % Math.max(1, entries.length);
+    const search = Promise.all(pick.map((e) => yahooSearchNews(e.symbol)));
+    // 3) Finnhub, stalest symbols within budget.
+    let fin = Promise.resolve([]);
+    if (newsEnabled()) {
+      const stale = entries
+        .map((e) => ({ e, at: cache.get(companyNewsPath(e.symbol))?.at ?? 0 }))
+        .filter((x) => Date.now() - x.at > FEED_TTL_MS)
+        .sort((a, b) => a.at - b.at);
+      const room = Math.max(0, Math.min(2, FEED_BUDGET - callsLastMinute()));
+      fin = Promise.all(stale.slice(0, room).map(({ e }) => finnhub(companyNewsPath(e.symbol), FEED_TTL_MS).catch(() => null)));
+    }
+    const [rssItems, searchItems] = await Promise.all([rss, search, fin]);
+    ingest(rssItems, entries);
+    ingest(searchItems.flat(), entries);
+    // Finnhub items from cache (cheap; covers symbols the Yahoo calls missed).
+    for (const e of entries) {
+      const hit = cache.get(companyNewsPath(e.symbol));
+      if (!hit || !Array.isArray(hit.value)) continue;
+      ingest(
+        hit.value.map((a) => ({ id: a.id, headline: a.headline, summary: a.summary, url: a.url, time: a.datetime, source: a.source })),
+        [e],
+      );
+    }
+    feed.lastPoll = Date.now();
+  } finally {
+    feed.busy = false;
+  }
+}
+
+function startPoller() {
+  if (feed.timer) return;
+  feed.timer = setInterval(() => {
+    if (Date.now() - feed.lastAsked > IDLE_MS) {
+      clearInterval(feed.timer);
+      feed.timer = null;
+      return;
+    }
+    pollOnce().catch(() => {});
+  }, POLL_MS);
+  feed.timer.unref?.();
+}
+
 /**
  * @param entries  [{ symbol, name, reason }] reason = 'watch' | 'mover' | 'core'
  * @returns newest symbol-tagged headlines from the last 24 h, deduplicated across symbols
  */
 export async function getNewsFeed(entries, { limit = 10 } = {}) {
-  if (!newsEnabled()) return { available: false, reason: 'News is off: set FINNHUB_API_KEY on the server.' };
+  feed.lastAsked = Date.now();
+  // Track the union of what's being asked for (latest request first), capped.
+  const merged = [...entries, ...feed.entries.filter((e) => !entries.some((x) => x.symbol === e.symbol))].slice(0, 30);
+  feed.entries = merged;
+  startPoller();
+  if (!feed.lastPoll) await pollOnce(); // first request waits for one round
 
-  // Refresh the stalest symbols within budget; serve the rest from cache.
-  const withAge = entries.map((e) => {
-    const hit = cache.get(companyNewsPath(e.symbol));
-    return { ...e, at: hit?.at ?? 0 };
-  });
-  const stale = withAge.filter((e) => Date.now() - e.at > FEED_TTL_MS).sort((a, b) => a.at - b.at);
-  const room = Math.max(0, Math.min(FEED_REFRESH_PER_CALL, FEED_BUDGET - callsLastMinute()));
-  await Promise.all(
-    stale.slice(0, room).map((e) => finnhub(companyNewsPath(e.symbol), FEED_TTL_MS).catch(() => null)),
-  );
-
-  const now = Date.now() / 1000;
-  const merged = new Map(); // normalised headline -> item
-  let checked = 0;
-  for (const e of entries) {
-    const hit = cache.get(companyNewsPath(e.symbol));
-    if (!hit) continue;
-    checked++;
-    const { tickerRe, phrase } = identifiers(e.symbol, e.name);
-    for (const a of Array.isArray(hit.value) ? hit.value : []) {
-      const headline = String(a.headline || '').trim();
-      if (!headline || now - a.datetime > 86400) continue;
-      // Must name this company in the headline, so the symbol chip is accurate.
-      const named = tickerRe.test(headline) || (phrase.length >= 3 && headline.toLowerCase().includes(phrase));
-      if (!named) continue;
-      const k = headline.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90);
-      const cur = merged.get(k);
-      if (cur) {
-        if (!cur.symbols.includes(e.symbol)) cur.symbols.push(e.symbol);
-        if (e.reason === 'mover') cur.mover = true;
-        if (e.reason === 'watch') cur.watch = true;
-        continue;
-      }
-      const { tags } = classify(headline);
-      const { tone } = classify(`${headline}. ${a.summary || ''}`);
-      merged.set(k, {
-        id: a.id ?? k,
-        time: a.datetime,
-        headline,
-        source: a.source || '',
-        url: safeUrl(a.url),
-        symbols: [e.symbol],
-        tags,
-        tone,
-        mover: e.reason === 'mover',
-        watch: e.reason === 'watch',
-      });
-    }
-  }
-  const items = [...merged.values()].sort((a, b) => b.time - a.time).slice(0, limit);
-  return { available: true, items, symbolsChecked: checked, symbolsTotal: entries.length, updatedAt: Date.now() };
+  const reason = new Map(entries.map((e) => [e.symbol, e.reason]));
+  const items = [...feed.pool.values()]
+    .filter((it) => it.symbols.some((s) => reason.has(s)))
+    .sort((a, b) => b.time - a.time)
+    .slice(0, limit)
+    .map((it) => ({
+      ...it,
+      symbols: [...it.symbols].sort((a, b) => Number(reason.has(b)) - Number(reason.has(a))),
+      mover: it.symbols.some((s) => reason.get(s) === 'mover'),
+      watch: it.symbols.some((s) => reason.get(s) === 'watch'),
+    }));
+  return {
+    available: true,
+    items,
+    symbolsChecked: entries.length,
+    symbolsTotal: entries.length,
+    sources: newsEnabled() ? ['Yahoo Finance', 'Finnhub'] : ['Yahoo Finance'],
+    lastPoll: feed.lastPoll,
+    updatedAt: Date.now(),
+  };
 }
 
 /** Compact catalyst for lists (top movers); never throws. */

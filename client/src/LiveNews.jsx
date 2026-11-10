@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-const REFRESH_MS = 45_000; // server re-checks each symbol's news every ~2 min
+const REFRESH_MS = 5_000; // the server's news poller runs every 5 s; requests read its pool
 const SHOW = 3;
 
 const TONE = { 1: ['tone-up', '▲', 'Positive'], '-1': ['tone-down', '▼', 'Negative'], 0: ['tone-flat', '●', 'Neutral'] };
@@ -89,8 +89,8 @@ export default function LiveNews({ symbols, current, onSelect }) {
           <span className="live-dot" aria-hidden="true" />
         </h2>
         <div className="movers-sub">
-          Watchlist, top gainers &amp; big caps · checks every 45 s
-          {data?.updatedAt && <> · updated {new Date(data.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</>}
+          Watchlist, top gainers &amp; big caps · checks every 5 s
+          {data?.lastPoll ? <> · checked {new Date(data.lastPoll).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</> : null}
         </div>
       </div>
 
