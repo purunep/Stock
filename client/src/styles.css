@@ -459,6 +459,37 @@ a.news-item:hover .news-title { text-decoration: underline; }
 .rvol-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--grid); min-width: 30px; }
 .rvol-bar span { display: block; height: 100%; border-radius: 2px; background: var(--series-1); }
 .movers-age { font-variant-numeric: tabular-nums; }
+
+/* Right rail stacks: top gainers, then live news */
+.layout-side { display: flex; flex-direction: column; gap: 16px; }
+.layout-side > .card { margin: 0; }
+@media (min-width: 1101px) { .layout-side { max-height: calc(100vh - 32px); overflow-y: auto; } }
+
+/* Live stock news */
+.livenews h2 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--up); animation: pulse 1.6s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+.livenews-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; }
+.livenews-list li { padding: 10px 2px; border-top: 1px solid var(--grid); transition: background 0.6s; border-radius: 6px; }
+.livenews-list li:first-child { border-top: 0; padding-top: 2px; }
+.livenews-list li.is-new { background: color-mix(in srgb, var(--series-1) 9%, transparent); }
+.ln-top { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-bottom: 4px; }
+.ln-sym {
+  font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 5px; border: 1px solid var(--border);
+  background: var(--surface-1); color: var(--text-primary); letter-spacing: 0.02em;
+}
+.ln-sym:hover { background: var(--wash); }
+.ln-sym.is-on { border-color: var(--text-primary); }
+.ln-flag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
+.ln-new { color: var(--series-1); }
+.ln-tone { font-size: 10px; margin-left: auto; }
+.ln-age { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ln-head {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: 13px; font-weight: 600; line-height: 1.35; color: var(--text-primary); text-decoration: none;
+}
+a.ln-head:hover { text-decoration: underline; }
+.ln-meta { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; margin-top: 4px; font-size: 11px; color: var(--text-muted); }
 .movers-note { margin: 12px 0 0; font-size: 11px; color: var(--text-muted); }
 
 /* Header signal badge */

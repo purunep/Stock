@@ -13,6 +13,13 @@ const cache = new Map();
 const calls = []; // timestamps of recent calls
 const MAX_PER_MIN = 45; // stay under Finnhub's 60/min
 
+/** Calls left in the current minute (the live feed leaves headroom for the per-stock panel). */
+function callsLastMinute() {
+  const now = Date.now();
+  while (calls.length && now - calls[0] > 60_000) calls.shift();
+  return calls.length;
+}
+
 async function finnhub(path, ttlMs) {
   const hit = cache.get(path);
   if (hit && Date.now() - hit.at < ttlMs) return hit.value;
@@ -86,13 +93,16 @@ const safeUrl = (u) => (/^https?:\/\//i.test(String(u || '')) ? u : null);
  * Recent news for a symbol, newest first, each tagged; plus a catalyst summary of the last 24 h.
  * Returns { available: false, reason } when there's no API key.
  */
+// Same 7-day window for the per-stock panel and the live feed, so they share one cache entry.
+function companyNewsPath(symbol) {
+  const day = (d) => d.toISOString().slice(0, 10);
+  return `/company-news?symbol=${encodeURIComponent(symbol)}&from=${day(new Date(Date.now() - 7 * 86400_000))}&to=${day(new Date())}`;
+}
+
 export async function getNews(symbol, name) {
   if (!newsEnabled()) return { available: false, reason: 'News is off: set FINNHUB_API_KEY on the server.' };
   if (!/^[A-Z.]{1,6}$/.test(symbol)) return { available: false, reason: 'News covers US-listed stocks only.' };
-  const day = (d) => d.toISOString().slice(0, 10);
-  const to = new Date();
-  const from = new Date(Date.now() - 7 * 86400_000);
-  const raw = await finnhub(`/company-news?symbol=${encodeURIComponent(symbol)}&from=${day(from)}&to=${day(to)}`, 3 * 60_000);
+  const raw = await finnhub(companyNewsPath(symbol), 3 * 60_000);
   const { tickerRe, phrase } = identifiers(symbol, name);
 
   const seen = new Set();
@@ -159,6 +169,79 @@ function summarise(items) {
     label: main ? main.label : `${fresh.length} news item${fresh.length === 1 ? '' : 's'}, no clear catalyst`,
     latest: { headline: fresh[0].headline, time: fresh[0].time, source: fresh[0].source, url: fresh[0].url },
   };
+}
+
+// ---- live market news feed ---------------------------------------------------------
+// Finnhub's free "general" and "merger" feeds carry no stock symbols, so the feed is built
+// from company news for a set of symbols (the user's watchlist + viewed stock, the current top
+// gainers, and the biggest US companies), keeping only headlines that name the company.
+//
+// Budget: each request refreshes at most FEED_REFRESH_PER_CALL symbols (oldest data first),
+// and only while fewer than FEED_BUDGET calls were made in the last minute, so the per-stock
+// news panel always has headroom. Everything else is served from cache.
+export const CORE_SYMBOLS = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AVGO', 'AMD', 'NFLX', 'JPM', 'SPY'];
+const FEED_TTL_MS = 2 * 60_000; // re-check a symbol's news at most every 2 min
+const FEED_REFRESH_PER_CALL = 6;
+const FEED_BUDGET = 30; // of the 45/min local cap
+
+/**
+ * @param entries  [{ symbol, name, reason }] reason = 'watch' | 'mover' | 'core'
+ * @returns newest symbol-tagged headlines from the last 24 h, deduplicated across symbols
+ */
+export async function getNewsFeed(entries, { limit = 10 } = {}) {
+  if (!newsEnabled()) return { available: false, reason: 'News is off: set FINNHUB_API_KEY on the server.' };
+
+  // Refresh the stalest symbols within budget; serve the rest from cache.
+  const withAge = entries.map((e) => {
+    const hit = cache.get(companyNewsPath(e.symbol));
+    return { ...e, at: hit?.at ?? 0 };
+  });
+  const stale = withAge.filter((e) => Date.now() - e.at > FEED_TTL_MS).sort((a, b) => a.at - b.at);
+  const room = Math.max(0, Math.min(FEED_REFRESH_PER_CALL, FEED_BUDGET - callsLastMinute()));
+  await Promise.all(
+    stale.slice(0, room).map((e) => finnhub(companyNewsPath(e.symbol), FEED_TTL_MS).catch(() => null)),
+  );
+
+  const now = Date.now() / 1000;
+  const merged = new Map(); // normalised headline -> item
+  let checked = 0;
+  for (const e of entries) {
+    const hit = cache.get(companyNewsPath(e.symbol));
+    if (!hit) continue;
+    checked++;
+    const { tickerRe, phrase } = identifiers(e.symbol, e.name);
+    for (const a of Array.isArray(hit.value) ? hit.value : []) {
+      const headline = String(a.headline || '').trim();
+      if (!headline || now - a.datetime > 86400) continue;
+      // Must name this company in the headline, so the symbol chip is accurate.
+      const named = tickerRe.test(headline) || (phrase.length >= 3 && headline.toLowerCase().includes(phrase));
+      if (!named) continue;
+      const k = headline.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90);
+      const cur = merged.get(k);
+      if (cur) {
+        if (!cur.symbols.includes(e.symbol)) cur.symbols.push(e.symbol);
+        if (e.reason === 'mover') cur.mover = true;
+        if (e.reason === 'watch') cur.watch = true;
+        continue;
+      }
+      const { tags } = classify(headline);
+      const { tone } = classify(`${headline}. ${a.summary || ''}`);
+      merged.set(k, {
+        id: a.id ?? k,
+        time: a.datetime,
+        headline,
+        source: a.source || '',
+        url: safeUrl(a.url),
+        symbols: [e.symbol],
+        tags,
+        tone,
+        mover: e.reason === 'mover',
+        watch: e.reason === 'watch',
+      });
+    }
+  }
+  const items = [...merged.values()].sort((a, b) => b.time - a.time).slice(0, limit);
+  return { available: true, items, symbolsChecked: checked, symbolsTotal: entries.length, updatedAt: Date.now() };
 }
 
 /** Compact catalyst for lists (top movers); never throws. */

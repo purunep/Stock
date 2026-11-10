@@ -87,6 +87,7 @@ Then open http://localhost:8080.
 | `GET /api/analysis/:symbol` | Buy/sell recommendation with per-signal breakdown, intraday signals and probability |
 | `GET /api/movers` | Top 3 US gainers on high relative volume |
 | `GET /api/news/:symbol` | Last 7 days of company news, tagged, with a 24-hour catalyst summary |
+| `GET /api/news-feed?symbols=AAPL,TSLA` | Newest symbol-tagged headlines across those symbols, the top gainers and big caps |
 | `GET /api/diagnostics` | Which upstream data sources this server can reach, and whether news is enabled |
 | `WS /ws` | Send `{"type":"subscribe","symbol":"AAPL","range":"1d"}` to get a `snapshot`, then a `tick` on each poll |
 
@@ -153,6 +154,13 @@ The **catalyst** is the most common tag among the last 24 hours' headlines that 
 - a move of 8% or more today, or in extended hours, with no company news: at most **Moderate**, since unexplained moves reverse more often
 
 The tags and tone come from keyword rules, so they can be wrong. Read the article before acting on it.
+
+**Latest stock news (right rail, under the top gainers).** The 3 newest headlines from the last 24 hours that name a stock, each with a clickable symbol chip. Finnhub's free market-wide feeds don't say which stock a story is about, so the feed (`/api/news-feed`) is built from company news for:
+- the stock you're viewing and the watchlist
+- the current top gainers (marked "Top gainer")
+- the biggest US companies (AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, AVGO, AMD, NFLX, JPM, SPY)
+
+Only headlines that name the company are kept, so the symbol chip is accurate, and the same story under several symbols is merged into one item. The page checks every 45 seconds and marks headlines that arrived since the last check as **New** for a minute. To stay inside Finnhub's free 60 calls a minute, each check re-fetches at most 6 symbols, oldest first, and only while the server has made fewer than 30 calls in the last minute. Each symbol's news is re-checked at most every 2 minutes, so a brand-new story can take up to about 2–3 minutes to appear.
 
 ### Trade levels, volume tools and trend alignment
 

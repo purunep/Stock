@@ -15,7 +15,7 @@ try {
 
 import { getChart, getWarmup, search, getTopMovers, diagnose, isValidSymbol, RANGES } from './yahoo.js';
 import { analyse } from './analysis.js';
-import { getNews, getCatalyst, newsEnabled } from './news.js';
+import { getNews, getCatalyst, getNewsFeed, newsEnabled, CORE_SYMBOLS } from './news.js';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 // In production hosts (Render, Fly, Heroku…) assign the port via PORT. In dev we use API_PORT
@@ -103,6 +103,37 @@ app.get('/api/movers', async (req, res) => {
       (data.movers || []).map(async (m) => ({ ...m, catalyst: await getCatalyst(m.symbol, m.name) })),
     );
     res.json({ ...data, movers });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// Live market news: newest symbol-tagged headlines across the user's watchlist, the current
+// top gainers and the biggest US companies. ?symbols=AAPL,TSLA (max 15) = the user's list.
+app.get('/api/news-feed', async (req, res) => {
+  const watch = String(req.query.symbols || '')
+    .toUpperCase()
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => /^[A-Z.]{1,6}$/.test(s))
+    .slice(0, 15);
+  try {
+    // Top gainers: whatever the movers panel currently shows (cached/snapshot, cheap).
+    const movers = await getTopMovers(3).then((d) => d.movers || []).catch(() => []);
+    const entries = [];
+    const add = (symbol, name, reason) => {
+      if (!entries.some((e) => e.symbol === symbol)) entries.push({ symbol, name, reason });
+    };
+    movers.forEach((m) => add(m.symbol, m.name, 'mover'));
+    watch.forEach((s) => add(s, '', 'watch'));
+    CORE_SYMBOLS.forEach((s) => add(s, '', 'core'));
+    // Company names make the "headline names this company" check work (cached quotes).
+    await Promise.all(
+      entries.filter((e) => !e.name).map(async (e) => {
+        e.name = await getChart(e.symbol, '1d', { ttlMs: 10 * 60_000 }).then((d) => d.quote.name).catch(() => '');
+      }),
+    );
+    res.json(await getNewsFeed(entries, { limit: 10 }));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }

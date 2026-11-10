@@ -6,6 +6,7 @@ import SignalBadge from './SignalBadge.jsx';
 import TopMovers from './TopMovers.jsx';
 import AlignmentBar from './AlignmentBar.jsx';
 import NewsPanel, { CatalystLine, useNews } from './NewsPanel.jsx';
+import LiveNews from './LiveNews.jsx';
 import { useAnalysis } from './useAnalysis.js';
 import { useLiveFeed } from './useLiveFeed.js';
 import { fmtPrice, fmtChange, fmtPct, fmtVolume, fmtTime } from './format.js';
@@ -188,6 +189,7 @@ export default function App() {
 
       <div className="layout-side">
         <TopMovers current={symbol} onSelect={setSymbol} />
+        <LiveNews symbols={[symbol, ...WATCHLIST.filter((s) => s !== symbol)]} current={symbol} onSelect={setSymbol} />
       </div>
       </div>
 
