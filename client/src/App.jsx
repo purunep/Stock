@@ -7,6 +7,7 @@ import TopMovers from './TopMovers.jsx';
 import AlignmentBar from './AlignmentBar.jsx';
 import NewsPanel, { CatalystLine, useNews } from './NewsPanel.jsx';
 import LiveNews from './LiveNews.jsx';
+import PriceStrip from './PriceStrip.jsx';
 import { useAnalysis } from './useAnalysis.js';
 import { useLiveFeed } from './useLiveFeed.js';
 import { fmtPrice, fmtChange, fmtPct, fmtVolume, fmtTime } from './format.js';
@@ -19,7 +20,7 @@ const RANGES = [
   { key: '1y', label: '1Y' },
   { key: '5y', label: '5Y' },
 ];
-const WATCHLIST = ['IBM','CBRS', 'INTC', 'OMH', 'SPCX', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'GOOGL', 'FUSE', 'SKHY'  ,'FRVO' ,'BIYA' , 'MRAM', 'QNT', 'WCT'];
+const WATCHLIST = ['IBM','CBRS', 'INTC', 'OMH', 'SPCX', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'GOOGL', 'FUSE', 'SKHY'  ,'FRVO' ,'BIYA' , 'MRAM', 'QNT', 'WCT', 'PLTR'];
 const STATE_LABEL = {
   REGULAR: 'Market open',
   PRE: 'Pre-market',
@@ -71,6 +72,8 @@ export default function App() {
           {dark ? 'Light' : 'Dark'}
         </button>
       </header>
+
+      <PriceStrip symbol={symbol} quote={quote} loading={loading} />
 
       <nav className="watchlist" aria-label="Quick picks">
         {WATCHLIST.map((s) => (
@@ -173,8 +176,6 @@ export default function App() {
 
         {quote && !loading && (
           <dl className="stats">
-            <Stat label="Prev close" value={fmtPrice(quote.prevClose)} />
-            <Stat label="Day range" value={`${fmtPrice(quote.dayLow)} – ${fmtPrice(quote.dayHigh)}`} />
             <Stat label="52-wk range" value={`${fmtPrice(quote.fiftyTwoWeekLow)} – ${fmtPrice(quote.fiftyTwoWeekHigh)}`} />
             <Stat label="Volume" value={fmtVolume(quote.volume)} />
             <Stat label="Last trade" value={fmtTime(quote.marketTime, quote.timezone)} />

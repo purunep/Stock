@@ -74,7 +74,33 @@ button { font: inherit; color: inherit; cursor: pointer; }
   .layout-side { position: static; order: -1; }
 }
 
-.topbar { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+.topbar { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+
+/* Key prices between the search bar and the watchlist */
+.pricestrip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 32px; margin-bottom: 14px; padding: 10px 16px;
+  min-height: 56px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+  transition: opacity 0.2s;
+}
+.pricestrip.is-dim { opacity: 0.55; }
+.ps-id { display: flex; align-items: baseline; gap: 10px; }
+.ps-sym { font-weight: 700; font-size: 15px; letter-spacing: 0.02em; }
+.ps-price { font-size: 22px; font-weight: 650; line-height: 1; font-variant-numeric: tabular-nums; }
+.ps-chg { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ps-chg span { font-size: 10px; }
+.ps-item { display: flex; flex-direction: column; gap: 3px; }
+.ps-item strong { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ps-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); white-space: nowrap; }
+.ps-pos { text-transform: none; letter-spacing: 0; }
+.ps-range { flex: 1; min-width: 260px; max-width: 460px; }
+.ps-rangebar { display: flex; align-items: center; gap: 10px; }
+.ps-track { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--grid); }
+.ps-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--series-1); opacity: 0.35; }
+.ps-marker {
+  position: absolute; top: -4px; width: 4px; height: 14px; margin-left: -2px; border-radius: 2px;
+  background: var(--text-primary); box-shadow: 0 0 0 2px var(--surface-1);
+}
+@media (max-width: 720px) { .ps-range { min-width: 100%; max-width: none; } }
 .brand { font-weight: 700; font-size: 16px; white-space: nowrap; }
 .ghost { background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; }
 .ghost:hover { background: var(--wash); }
