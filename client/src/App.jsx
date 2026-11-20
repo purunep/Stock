@@ -20,7 +20,7 @@ const RANGES = [
   { key: '1y', label: '1Y' },
   { key: '5y', label: '5Y' },
 ];
-const WATCHLIST = ['IBM', 'ANT', 'CBRS', 'INTC', 'OMH', 'CLRO', 'SPCX', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'GOOGL', 'FUSE', 'SKHY'  ,'FRVO' ,'BIYA' , 'MRAM', 'QNT', 'WCT', 'PLTR'];
+const WATCHLIST = ['IBM', 'ANT', 'CBRS', 'INTC', 'OMH', 'CLRO', 'SPCX', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'GOOGL', 'FUSE', 'SKHY'  ,'FRVO' ,'BIYA' , 'MRAM', 'QNT', 'WCT', 'PLTR' , 'XNDU.TO', 'CNQ.TO' ,'VWAV'];
 const STATE_LABEL = {
   REGULAR: 'Market open',
   PRE: 'Pre-market',
